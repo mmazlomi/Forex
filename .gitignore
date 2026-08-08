@@ -1,0 +1,41 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Data (SQLite DB, runtime data)
+data/*.sqlite
+data/*.sqlite-journal
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/*.sqlite.pre-*
+
+# Claude Code local runtime state
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Test/coverage output
+coverage/
+.nyc_output/
+
+# Never commit any credential/key material by pattern
+*.pem
+*.key
+credentials.json

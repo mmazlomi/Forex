@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trading Bot</title>
+  <link rel="stylesheet" href="css/styles.css?v=12" />
+  <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1>Trading Bot</h1>
+    <div class="header-controls">
+      <label class="asset-picker">
+        Exchange
+        <select id="exchange-input"></select>
+      </label>
+      <label class="asset-picker symbol-picker">
+        Symbol
+        <input id="symbol-input" type="text" value="BTC/USDT" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        <ul id="symbol-suggestions-list" class="suggestions-list" hidden></ul>
+      </label>
+      <label class="asset-picker">
+        Asset type
+        <select id="asset-type-input">
+          <option value="crypto">crypto</option>
+          <option value="stock">stock</option>
+        </select>
+      </label>
+      <label class="asset-picker">
+        Timeframe
+        <select id="timeframe-input">
+          <option>1m</option><option>5m</option><option>15m</option>
+          <option selected>1h</option><option>4h</option><option>1d</option><option>1w</option>
+        </select>
+      </label>
+      <label class="asset-picker" id="strategy-picker">
+        <span id="strategy-select-label" title="Freqtrade-style pluggable strategy used by the Generate Signal button below. Per-watchlist-asset strategy is set on the Watchlist tab instead.">Strategy</span>
+        <select id="strategy-select"></select>
+      </label>
+      <button id="load-asset-btn" type="button">Load</button>
+    </div>
+    <div class="mode-switcher">
+      <button id="mode-demo-btn" class="mode-btn mode-btn--active" type="button">Demo</button>
+      <button id="mode-real-btn" class="mode-btn" type="button">Real</button>
+      <span id="mode-badge" class="mode-badge mode-badge--demo">DEMO MODE</span>
+    </div>
+    <div class="account-bar">
+      <span id="account-username"></span>
+      <button id="logout-btn" type="button">Log Out</button>
+    </div>
+  </header>
+
+  <section class="risk-warning" role="alert">
+    <strong>Risk Warning:</strong> This software is provided for educational and informational purposes only
+    and does not constitute financial advice. Trading financial instruments carries a high level of risk and
+    may not be suitable for all investors. Past performance does not guarantee future results. No profit is
+    guaranteed. You are solely responsible for any trading decisions and outcomes.
+  </section>
+
+  <div class="status-bar" id="status-bar">
+    <div class="status-bar__item">
+      <span class="status-bar__label">Balance</span>
+      <span class="status-bar__value" id="status-balance">-</span>
+    </div>
+    <div class="status-bar__item">
+      <span class="status-bar__label">Net P&amp;L</span>
+      <span class="status-bar__value" id="status-net-pnl">-</span>
+    </div>
+    <div class="status-bar__item">
+      <span class="status-bar__label">Open Positions</span>
+      <span class="status-bar__value" id="status-open-positions">-</span>
+    </div>
+    <div class="status-bar__item status-bar__item--stop">
+      <span class="status-bar__label">Trading</span>
+      <span class="status-bar__value" id="status-emergency">-</span>
+    </div>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab-btn tab-btn--active" data-tab="dashboard" type="button">Dashboard</button>
+    <button class="tab-btn" data-tab="demo" type="button">Demo Trading</button>
+    <button class="tab-btn" data-tab="real" type="button">Real Trading</button>
+    <button class="tab-btn" data-tab="watchlist" type="button">Watchlist</button>
+    <button class="tab-btn" data-tab="backtest" type="button">Backtest</button>
+    <button class="tab-btn" data-tab="risk" type="button">Risk Settings</button>
+    <button class="tab-btn" data-tab="system" type="button">System &amp; Logs</button>
+  </nav>
+
+  <main class="app-main">
+    <!-- Dashboard tab -->
+    <section class="tab-panel tab-panel--active" id="tab-dashboard">
+      <div class="card" id="price-card">
+        <h2>Market Data</h2>
+        <div class="empty-state" data-role="empty">Click "Load" to fetch market data for an asset.</div>
+        <dl class="stat-list" data-role="content" hidden>
+          <div><dt>Price</dt><dd data-field="price">-</dd></div>
+          <div><dt>24h Change</dt><dd data-field="change">-</dd></div>
+          <div><dt>24h Volume</dt><dd data-field="volume">-</dd></div>
+          <div><dt>Market</dt><dd data-field="marketOpen">-</dd></div>
+          <div><dt>Data freshness</dt><dd data-field="freshness">-</dd></div>
+        </dl>
+      </div>
+
+      <div class="card" id="chart-card">
+        <h2>Price Chart</h2>
+        <div class="header-controls">
+          <button id="try-tradingview-btn" type="button">Try TradingView Chart</button>
+          <button id="use-builtin-chart-btn" type="button" hidden>Use Built-in Chart</button>
+        </div>
+        <div id="tv-chart-container" class="tv-chart-container"></div>
+        <p id="chart-tv-attribution" class="attribution" hidden>Chart by <a href="https://www.tradingview.com" target="_blank" rel="noopener">TradingView</a> — full drawing tools, indicator library, chart types, and replay mode are built into the chart itself (use its own toolbar). It shows TradingView's own market data, independent of the Technical Analysis panel and Signal below (which use this app's own exchange data). TradingView's servers are blocked in some countries/networks — if the chart shows a blank box or an error instead of candles, click "Use Built-in Chart" above.</p>
+        <p id="chart-fallback-notice" class="hint">Showing this app's own live candle data (same feed the Technical Analysis panel uses). TradingView's Advanced Chart widget has more tools (drawing, indicators, replay) but requires reaching TradingView's own servers directly from your browser, which some networks/countries block — click "Try TradingView Chart" above if you'd like to attempt it.</p>
+      </div>
+
+      <div class="grid grid--2col">
+        <div class="card" id="technical-card">
+          <h2>Technical Analysis</h2>
+          <div class="empty-state" data-role="empty">No data loaded.</div>
+          <table class="data-table" data-role="content" hidden>
+            <tbody id="technical-table-body"></tbody>
+          </table>
+        </div>
+
+        <div class="card" id="fundamental-card">
+          <h2>Fundamental Analysis</h2>
+          <div class="empty-state" data-role="empty">No data loaded.</div>
+          <table class="data-table" data-role="content" hidden>
+            <tbody id="fundamental-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="signal-card">
+        <h2>Signal</h2>
+        <button id="generate-signal-btn" type="button">Generate Signal</button>
+        <p class="hint">Analyzes whichever asset is loaded in the header above (Symbol/Exchange/Timeframe), ad-hoc or saved.</p>
+        <div id="signal-current" class="signal-current"></div>
+        <h3>Signal History</h3>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Time (Local)</th><th>Symbol</th><th>Status</th><th>Score</th><th>Confidence</th><th>Entry</th><th>Stop</th><th>Take</th><th>R:R</th></tr></thead>
+            <tbody id="signal-history-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="watchlist-signal-card">
+        <h2>Watchlist Signals</h2>
+        <button id="generate-watchlist-signals-btn" type="button">Generate for Watchlist</button>
+        <p class="hint">Runs signal generation for every asset on your Watchlist, using each one's own saved strategy. Shows each asset's most recently generated signal even before you click the button — it doesn't clear on page refresh.</p>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Symbol</th><th>Exchange</th><th>Strategy</th><th>Time (Local)</th><th>Status</th><th>Score</th><th>Entry</th><th>Stop</th><th>Take</th><th>R:R</th></tr></thead>
+            <tbody id="watchlist-signals-body"></tbody>
+          </table>
+        </div>
+        <div id="watchlist-signals-empty" class="empty-state">Add assets to your Watchlist to use this.</div>
+      </div>
+    </section>
+
+    <!-- Demo Trading tab: Spot + Futures -->
+    <section class="tab-panel" id="tab-demo">
+      <h3 class="market-divider">Spot</h3>
+      <div class="card">
+        <h2>Demo Portfolio <span class="mode-badge mode-badge--demo">DEMO</span></h2>
+        <dl class="stat-list" id="demo-portfolio-stats"></dl>
+        <h3>Open Positions</h3>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Current</th><th>Unrealized P&amp;L</th><th>Stop</th><th>Take</th></tr></thead>
+            <tbody id="demo-positions-body"></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Profit &amp; Loss <span class="mode-badge mode-badge--demo">DEMO</span></h2>
+        <dl class="stat-list" id="demo-pnl-stats"></dl>
+      </div>
+      <div class="card">
+        <h2>Place Demo Order</h2>
+        <p class="hint">Trading: <strong id="spot-demo-current-symbol">-</strong> (set from the header above, or via a "Trade Demo" button on the Watchlist tab).</p>
+        <form id="demo-order-form" class="order-form">
+          <label>Side
+            <select name="side"><option value="buy">Buy</option><option value="sell">Sell</option></select>
+          </label>
+          <label>Order Type
+            <select name="orderType">
+              <option value="market">Market</option>
+              <option value="limit">Limit</option>
+              <option value="stop_market">Stop-Market</option>
+              <option value="stop_limit">Stop-Limit</option>
+              <option value="oco">OCO (Sell only — closes position)</option>
+            </select>
+          </label>
+          <label class="order-type-field" data-for="limit,stop_limit">Limit Price <input name="limitPrice" type="number" step="any" /></label>
+          <label class="order-type-field" data-for="stop_market,stop_limit">Trigger (Stop) Price <input name="triggerPrice" type="number" step="any" /></label>
+          <label>Stop-loss <input name="stopLoss" type="number" step="any" /></label>
+          <label>Take-profit <input name="takeProfit" type="number" step="any" /></label>
+          <label>Amount <input name="qty" type="number" step="any" min="0" placeholder="auto-sized by risk %" /></label>
+          <p class="hint">Market fills now. Limit fills at your price or better. Stop-Market/Stop-Limit activate once price crosses your trigger — until then they sit pending (checked periodically, not instant). OCO is Sell-only: a linked take-profit + stop-loss pair for an existing position, reusing the Take-profit/Stop-loss fields above as its two leg prices — whichever fills first automatically cancels the other.</p>
+          <p class="hint">Leave Amount blank to auto-size the position from your Max Risk Per Trade setting (the usual case). Set it explicitly to trade a specific amount instead — it still can't risk more than that same max, only less.</p>
+          <button type="submit">Review Order</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Demo Pending Orders</h2>
+        <p class="hint">Limit/Stop/OCO orders awaiting a fill or trigger. Checked periodically in the background — not instant.</p>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Time (Local)</th><th>Symbol</th><th>Type</th><th>Side</th><th>Qty</th><th>Limit/Trigger</th><th></th></tr></thead>
+            <tbody id="demo-pending-orders-body"></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Demo Order History</h2>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Time (Local)</th><th>Symbol</th><th>Type</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Reason</th></tr></thead>
+            <tbody id="demo-orders-body"></tbody></table>
+        </div>
+      </div>
+
+      <h3 class="market-divider">Futures</h3>
+      <div class="card">
+        <h2>Demo Futures Portfolio <span class="mode-badge mode-badge--demo">DEMO</span></h2>
+        <dl class="stat-list" id="futures-demo-portfolio-stats"></dl>
+        <h3>Open Positions</h3>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Symbol</th><th>Side</th><th>Leverage</th><th>Qty</th><th>Entry</th><th>Current</th><th>Unrealized P&amp;L</th><th>Liquidation</th><th>Stop</th><th>Take</th></tr></thead>
+            <tbody id="futures-demo-positions-body"></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Futures Profit &amp; Loss <span class="mode-badge mode-badge--demo">DEMO</span></h2>
+        <dl class="stat-list" id="futures-demo-pnl-stats"></dl>
+      </div>
+      <div class="card">
+        <h2>Place Demo Futures Order</h2>
+        <p class="hint">Trading: <strong id="futures-demo-current-symbol">-</strong> (set via the Futures Asset picker or a "Trade" button on the Watchlist tab).</p>
+        <form id="futures-demo-order-form" class="order-form">
+          <label>Action
+            <select name="action">
+              <option value="open_long">Open Long</option>
+              <option value="open_short">Open Short</option>
+              <option value="close">Close Position</option>
+            </select>
+          </label>
+          <label class="futures-action-field" data-for="open_long,open_short">Leverage <input name="leverage" type="number" step="1" min="1" value="3" /></label>
+          <label class="futures-action-field" data-for="open_long,open_short">Stop-loss <input name="stopLoss" type="number" step="any" /></label>
+          <label class="futures-action-field" data-for="open_long,open_short">Take-profit <input name="takeProfit" type="number" step="any" /></label>
+          <label class="futures-action-field" data-for="open_long,open_short">Amount <input name="qty" type="number" step="any" min="0" placeholder="auto-sized by risk %" /></label>
+          <p class="hint">Market orders only; closing a position always closes the full quantity (no partial
+            close). One-way mode: only one open position per symbol — Open Long/Open Short is rejected while a
+            position is already open, close it first.</p>
+          <button type="submit">Review Order</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Demo Futures Order History</h2>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Time (Local)</th><th>Symbol</th><th>Action</th><th>Leverage</th><th>Qty</th><th>Price</th><th>Status</th><th>Reason</th></tr></thead>
+            <tbody id="futures-demo-orders-body"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Real Trading tab: Spot + Futures -->
+    <section class="tab-panel" id="tab-real">
+      <div class="card real-warning-card">
+        <h2>Real Trading <span class="mode-badge mode-badge--real">REAL — LIVE MONEY</span></h2>
+        <p class="real-warning-text">Real Trading uses actual funds on a live exchange account. Orders placed
+          here can result in real financial loss. Only proceed if you understand and accept this risk. This
+          single unlock covers both Spot and Futures Real trading below.</p>
+        <div id="real-locked-panel">
+          <p>Real Trading is locked for this session.</p>
+          <label>Type <code>I UNDERSTAND THE RISK</code> to unlock:
+            <input id="unlock-phrase-input" type="text" autocomplete="off" />
+          </label>
+          <button id="unlock-real-btn" type="button">Unlock Real Trading</button>
+          <p id="real-server-status" class="hint"></p>
+        </div>
+        <div id="real-unlocked-panel" hidden>
+          <p class="real-warning-text">Real Trading is unlocked for this session.</p>
+        </div>
+      </div>
+
+      <div class="card" id="real-credentials-card">
+        <h2>Exchange Credentials <span class="mode-badge mode-badge--real">REAL</span></h2>
+        <p class="hint">Private to your account — no other user can see or use these credentials. Also still requires <code>ENABLE_LIVE_TRADING=true</code> set in the server's <code>.env</code> (a separate, deliberately restart-only switch) before any real order can be placed.</p>
+        <p id="real-credentials-status" class="hint"></p>
+        <p id="real-credentials-exchange-hint" class="hint"></p>
+        <form id="real-credentials-form" class="order-form">
+          <label>Exchange <select id="real-credentials-exchange" name="exchangeName"></select></label>
+          <label>API Key <input name="apiKey" type="password" autocomplete="off" required /></label>
+          <label>API Secret <input name="apiSecret" type="password" autocomplete="off" /></label>
+          <button type="submit">Save</button>
+          <button id="real-credentials-clear-btn" type="button">Clear</button>
+        </form>
+        <p id="real-credentials-error" class="error-text" hidden></p>
+      </div>
+
+      <h3 class="market-divider">Spot</h3>
+      <div class="card" id="real-portfolio-card" hidden>
+        <h2>Real Portfolio <span class="mode-badge mode-badge--real">REAL</span></h2>
+        <p class="hint">Balance shown here is a snapshot from the last sync, not automatically live — this app only fetches it from your exchange when you place an order or click Refresh.</p>
+        <button id="refresh-real-balance-btn" type="button">Refresh Balance</button>
+        <dl class="stat-list" id="real-portfolio-stats"></dl>
+        <div id="real-wallet-balances-section" hidden>
+          <h3>Wallet Balances (all currencies)</h3>
+          <p class="hint">Every non-zero currency in your exchange wallet as of the last Refresh — the Balance/Available figures above only track the one currency matching the asset currently loaded above.</p>
+          <dl class="stat-list" id="real-wallet-balances"></dl>
+        </div>
+        <h3>Open Positions</h3>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Current</th><th>Unrealized P&amp;L</th><th>Stop</th><th>Take</th></tr></thead>
+            <tbody id="real-positions-body"></tbody></table>
+        </div>
+      </div>
+      <div class="card" id="real-pnl-card" hidden>
+        <h2>Profit &amp; Loss <span class="mode-badge mode-badge--real">REAL</span></h2>
+        <dl class="stat-list" id="real-pnl-stats"></dl>
+      </div>
+      <div class="card" id="real-order-card" hidden>
+        <h2>Place Real Order</h2>
+        <p class="hint">Trading: <strong id="spot-real-current-symbol">-</strong> (set from the header above, or via a "Trade Real" button on the Watchlist tab).</p>
+        <form id="real-order-form" class="order-form">
+          <label>Side
+            <select name="side"><option value="buy">Buy</option><option value="sell">Sell</option></select>
+          </label>
+          <label>Order Type
+            <select name="orderType">
+              <option value="market">Market</option>
+              <option value="limit">Limit</option>
+              <option value="stop_market">Stop-Market</option>
+              <option value="stop_limit">Stop-Limit</option>
+              <option value="oco">OCO (Sell only — closes position)</option>
+            </select>
+          </label>
+          <label class="order-type-field" data-for="limit,stop_limit">Limit Price <input name="limitPrice" type="number" step="any" /></label>
+          <label class="order-type-field" data-for="stop_market,stop_limit">Trigger (Stop) Price <input name="triggerPrice" type="number" step="any" /></label>
+          <label>Stop-loss <input name="stopLoss" type="number" step="any" /></label>
+          <label>Take-profit <input name="takeProfit" type="number" step="any" /></label>
+          <label>Amount <input name="qty" type="number" step="any" min="0" placeholder="auto-sized by risk %" /></label>
+          <p class="hint">Market fills now. Limit fills at your price or better. Stop-Market/Stop-Limit activate once price crosses your trigger — until then they sit pending on the exchange itself (checked periodically, not instant). OCO is Sell-only: two independent linked orders on the exchange (a take-profit + stop-loss pair) for an existing position, reusing the Take-profit/Stop-loss fields above as its two leg prices — whichever fills first cancels the other. Not every exchange supports every order type; an unsupported one is rejected clearly before anything is sent.</p>
+          <p class="hint">Leave Amount blank to auto-size the position from your Max Risk Per Trade setting (the usual case). Set it explicitly to trade a specific amount instead — it still can't risk more than that same max, only less.</p>
+          <button type="submit">Review Order</button>
+        </form>
+      </div>
+      <div class="card" id="real-pending-orders-card" hidden>
+        <h2>Real Pending Orders</h2>
+        <p class="hint">Limit/Stop/OCO orders awaiting a fill or trigger on the exchange. Checked periodically in the background — not instant.</p>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Time (Local)</th><th>Symbol</th><th>Type</th><th>Side</th><th>Qty</th><th>Limit/Trigger</th><th></th></tr></thead>
+            <tbody id="real-pending-orders-body"></tbody></table>
+        </div>
+      </div>
+      <div class="card" id="real-orders-card" hidden>
+        <h2>Real Order History</h2>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Time (Local)</th><th>Symbol</th><th>Type</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Reason</th></tr></thead>
+            <tbody id="real-orders-body"></tbody></table>
+        </div>
+      </div>
+
+      <h3 class="market-divider">Futures</h3>
+      <p class="hint">Futures uses the same Real Trading unlock above — only KuCoin is supported, a fully
+        separate market from Spot with its own balance, positions, and orders. Losses (and gains) are
+        magnified by leverage, and a position can be automatically liquidated (force-closed) if the price
+        moves against you enough — this can happen even with a stop-loss set, since liquidation may trigger
+        before your stop does.</p>
+      <div class="card" id="futures-real-portfolio-card" hidden>
+        <h2>Real Futures Portfolio <span class="mode-badge mode-badge--real">REAL</span></h2>
+        <dl class="stat-list" id="futures-real-portfolio-stats"></dl>
+        <h3>Open Positions</h3>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Symbol</th><th>Side</th><th>Leverage</th><th>Qty</th><th>Entry</th><th>Current</th><th>Unrealized P&amp;L</th><th>Liquidation</th><th>Stop</th><th>Take</th></tr></thead>
+            <tbody id="futures-real-positions-body"></tbody></table>
+        </div>
+      </div>
+      <div class="card" id="futures-real-pnl-card" hidden>
+        <h2>Real Futures Profit &amp; Loss <span class="mode-badge mode-badge--real">REAL</span></h2>
+        <dl class="stat-list" id="futures-real-pnl-stats"></dl>
+      </div>
+      <div class="card" id="futures-real-order-card" hidden>
+        <h2>Place Real Futures Order</h2>
+        <p class="hint">Trading: <strong id="futures-real-current-symbol">-</strong> (set via the Futures Asset picker or a "Trade" button on the Watchlist tab).</p>
+        <form id="futures-real-order-form" class="order-form">
+          <label>Action
+            <select name="action">
+              <option value="open_long">Open Long</option>
+              <option value="open_short">Open Short</option>
+              <option value="close">Close Position</option>
+            </select>
+          </label>
+          <label class="futures-action-field" data-for="open_long,open_short">Leverage <input name="leverage" type="number" step="1" min="1" value="3" /></label>
+          <label class="futures-action-field" data-for="open_long,open_short">Stop-loss <input name="stopLoss" type="number" step="any" /></label>
+          <label class="futures-action-field" data-for="open_long,open_short">Take-profit <input name="takeProfit" type="number" step="any" /></label>
+          <label class="futures-action-field" data-for="open_long,open_short">Amount <input name="qty" type="number" step="any" min="0" placeholder="auto-sized by risk %" /></label>
+          <button type="submit">Review Order</button>
+        </form>
+      </div>
+      <div class="card" id="futures-real-orders-card" hidden>
+        <h2>Real Futures Order History</h2>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Time (Local)</th><th>Symbol</th><th>Action</th><th>Leverage</th><th>Qty</th><th>Price</th><th>Status</th><th>Reason</th></tr></thead>
+            <tbody id="futures-real-orders-body"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Watchlist tab: spot + futures demo + futures real, all watchlist management and "trade this" entry points -->
+    <section class="tab-panel" id="tab-watchlist">
+      <div class="card">
+        <h2>Spot Watchlist</h2>
+        <p class="hint">Every field below is edited in place — change Strategy and it saves automatically as
+          soon as you click away (no separate Save button); the Auto-Trade checkbox takes effect the moment
+          you tick it. "Trade Demo"/"Trade Real" load that symbol into the header and jump straight to the
+          matching order form. 🎯 Auto-Select hands the Strategy column to the AI: it periodically
+          backtests every built-in strategy for that asset and keeps the top few by win rate, trading only
+          when a majority of them agree — see the Strategy cell's tooltip for which ones are currently
+          selected. Backtested win rate reflects each strategy's technical performance only (historical
+          fundamentals aren't available for backtesting), even though live trades still use each selected
+          strategy's real technical+fundamental weighting.</p>
+        <div class="header-controls">
+          <button id="add-watchlist-btn" type="button">+ Add current symbol (from header above)</button>
+          <button id="enable-all-autotrade-btn" type="button" title="Turns on AI Auto-Trade (Demo) for every asset currently on your Spot Watchlist, in one click.">🤖 Enable Auto-Trade for All</button>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Symbol</th><th>Exchange</th><th>Type</th><th>Timeframe</th><th>Strategy</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade (Demo)</th><th></th><th></th><th></th></tr></thead>
+            <tbody id="watchlist-spot-body"></tbody>
+          </table>
+        </div>
+        <div id="watchlist-spot-empty" class="empty-state">Load an asset above and add it to start your Spot Watchlist.</div>
+      </div>
+
+      <div class="card">
+        <h2>Futures Asset</h2>
+        <div class="header-controls">
+          <label class="asset-picker symbol-picker">
+            Symbol
+            <input id="futures-symbol-input" type="text" value="BTC/USDT:USDT" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+            <ul id="futures-symbol-suggestions-list" class="suggestions-list" hidden></ul>
+          </label>
+          <button id="futures-add-demo-watchlist-btn" type="button">+ Add to Demo Watchlist</button>
+          <button id="futures-add-real-watchlist-btn" type="button" hidden>+ Add to Real Watchlist</button>
+        </div>
+        <p class="hint">KuCoin USDT-margined perpetual futures only, in ccxt's unified symbol format
+          (BASE/QUOTE:SETTLE, e.g. BTC/USDT:USDT) — a different shape from Spot's BASE/QUOTE. Demo and Real
+          watchlists are fully independent — adding a symbol to one does not add it to the other, and each
+          keeps its own leverage/strategy/auto-trade setting even for the same symbol.</p>
+      </div>
+
+      <div class="card">
+        <h2>Futures Watchlist — Demo &amp; AI Auto-Trade</h2>
+        <p class="hint">🤖 Demo auto-trade reuses the same signal engine as Spot's, with no real stakes.</p>
+        <button id="futures-demo-enable-all-autotrade-btn" type="button" title="Turns on AI Auto-Trade for every symbol currently on your Demo Futures Watchlist, in one click.">🤖 Enable Auto-Trade for All</button>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Symbol</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th></th><th></th></tr></thead>
+            <tbody id="futures-demo-watchlist-body"></tbody>
+          </table>
+        </div>
+        <div id="futures-demo-watchlist-empty" class="empty-state">Add a futures symbol above to start watching it in Demo.</div>
+      </div>
+
+      <div class="card">
+        <h2>Futures Watchlist — Real &amp; AI Auto-Trade</h2>
+        <p class="hint" id="futures-real-watchlist-locked-hint">Unlock Real Trading from the Real Trading tab first to manage this watchlist.</p>
+        <div id="futures-real-watchlist-panel" hidden>
+          <p class="hint">Fully independent from the Demo Futures Watchlist above — a symbol here is its
+            own separate entry, with its own leverage/strategy/auto-trade setting. 🤖 Auto-trade here is a
+            deliberate, higher-friction opt-in: even when ticked, it does nothing unless the server operator
+            has ALSO set <code>ENABLE_FUTURES_AUTO_TRADING=true</code> in <code>.env</code> and restarted the
+            server. When fully active, it places real, leveraged, unattended trades with liquidation risk on
+            a timer, with leverage capped at a server-configured maximum. There is deliberately no
+            "enable for all" bulk button here — each symbol is a conscious, one-at-a-time decision.</p>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>Symbol</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th></th><th></th></tr></thead>
+              <tbody id="futures-real-watchlist-body"></tbody>
+            </table>
+          </div>
+          <div id="futures-real-watchlist-empty" class="empty-state">Add a futures symbol above to start watching it in Real.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Backtest tab -->
+    <section class="tab-panel" id="tab-backtest">
+      <div class="card">
+        <h2>Run Backtest</h2>
+        <form id="backtest-form" class="order-form">
+          <label>Strategy <select id="backtest-strategy-select" name="strategyId"></select></label>
+          <label>Start date <input name="start" type="date" required /></label>
+          <label>End date <input name="end" type="date" required /></label>
+          <label>Initial capital <input name="initialCapital" type="number" value="10000" /></label>
+          <label>Fee % <input name="feePercent" type="number" step="any" value="0.1" /></label>
+          <label>Slippage % <input name="slippagePercent" type="number" step="any" value="0.05" /></label>
+          <button type="submit">Run Backtest</button>
+        </form>
+        <p class="hint" id="backtest-applied-hint"></p>
+        <p class="hint">Uses the current header's exchange/symbol/timeframe. Longer ranges take longer to fetch. Backtests always use technical analysis only (fundamentalWeight is forced to 0 — no look-ahead-free historical fundamentals feed exists).</p>
+      </div>
+      <div class="card" id="backtest-results-card" hidden>
+        <h2>Results</h2>
+        <p class="disclaimer">Past performance does not guarantee future results.</p>
+        <dl class="stat-list" id="backtest-metrics"></dl>
+        <div id="equity-chart" class="chart-container"></div>
+        <div id="backtest-warnings"></div>
+      </div>
+
+      <div class="card">
+        <h2>Strategy Optimizer <span class="badge">hyperopt-lite</span></h2>
+        <p class="hint">Grid-searches strategies &amp; buy/sell thresholds over the same date range above (fetches candles once, simulates many combinations in-memory). This is a simple grid search, not true Bayesian hyperopt, and it risks overfitting to the tested period — always sanity-check on a different date range before trusting a result.</p>
+        <button id="run-optimizer-btn" type="button">Run Optimizer</button>
+        <div id="optimizer-results" hidden>
+          <p class="hint" id="optimizer-summary"></p>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>Strategy</th><th>Buy≥</th><th>Sell≤</th><th>Trades</th><th>Win %</th><th>Net P&amp;L %</th><th>Max DD %</th><th></th></tr></thead>
+              <tbody id="optimizer-leaderboard-body"></tbody>
+            </table>
+          </div>
+          <p class="disclaimer" id="optimizer-disclaimer"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Risk Settings tab -->
+    <section class="tab-panel" id="tab-risk">
+      <div class="card">
+        <h2>Risk Settings <span id="risk-mode-badge" class="mode-badge mode-badge--demo">DEMO</span></h2>
+        <form id="risk-settings-form" class="order-form">
+          <label>Max risk per trade (%) <input name="maxRiskPerTradePercent" type="number" step="any" /></label>
+          <label>Max daily loss (%) <input name="maxDailyLossPercent" type="number" step="any" /></label>
+          <label>Max open positions <input name="maxOpenPositions" type="number" /></label>
+          <label>Max order value <input name="maxOrderValue" type="number" step="any" /></label>
+          <label>Min risk/reward ratio <input name="minRiskRewardRatio" type="number" step="any" /></label>
+          <label>Max portfolio exposure (%) <input name="maxPortfolioExposurePercent" type="number" step="any" /></label>
+          <button type="submit">Save Settings</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Emergency Stop</h2>
+        <div class="emergency-controls">
+          <button class="danger-btn" data-action="stop" data-scope="global" type="button">Stop ALL Trading</button>
+          <button data-action="stop" data-scope="demo" type="button">Stop Demo Only</button>
+          <button data-action="stop" data-scope="real" type="button">Stop Real Only</button>
+        </div>
+        <div class="emergency-controls">
+          <button data-action="reset" data-scope="global" type="button">Reset Global</button>
+          <button data-action="reset" data-scope="demo" type="button">Reset Demo</button>
+          <button data-action="reset" data-scope="real" type="button">Reset Real</button>
+        </div>
+        <div id="emergency-status"></div>
+      </div>
+    </section>
+
+    <!-- System tab -->
+    <section class="tab-panel" id="tab-system">
+      <div class="card">
+        <h2>System Status</h2>
+        <button id="refresh-system-btn" type="button">Refresh</button>
+        <pre id="system-status-output" class="raw-output"></pre>
+      </div>
+      <div class="card">
+        <h2>Logs</h2>
+        <button id="refresh-logs-btn" type="button">Refresh</button>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Time (Local)</th><th>Level</th><th>Mode</th><th>Category</th><th>Message</th></tr></thead>
+            <tbody id="logs-body"></tbody></table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="auth-gate-backdrop" class="dialog-backdrop auth-gate-backdrop">
+    <div class="dialog auth-gate-dialog">
+      <h2>Trading Bot</h2>
+      <p class="hint">Sign in to continue. Everything is private to your account — Watchlist, Demo/Real portfolios, orders, risk settings, and exchange credentials. The only exception is the global emergency stop, which any logged-in user can trigger to halt trading instance-wide.</p>
+      <nav class="tabs auth-gate-tabs">
+        <button id="auth-tab-login" class="tab-btn tab-btn--active" type="button">Log In</button>
+        <button id="auth-tab-signup" class="tab-btn" type="button">Sign Up</button>
+      </nav>
+      <form id="login-form" class="auth-form">
+        <label>Username <input name="username" type="text" autocomplete="username" required /></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
+        <button type="submit" class="primary-btn">Log In</button>
+        <p id="login-error" class="error-text" hidden></p>
+      </form>
+      <form id="signup-form" class="auth-form" hidden>
+        <label>Username <input name="username" type="text" autocomplete="username" required minlength="3" maxlength="32" pattern="[a-z0-9_-]+" /></label>
+        <label>Password <input name="password" type="password" autocomplete="new-password" required minlength="8" /></label>
+        <p class="hint">3-32 characters: lowercase letters, numbers, "_" or "-". Password at least 8 characters. There is no email and no password-reset flow — keep your password somewhere safe.</p>
+        <button type="submit" class="primary-btn">Sign Up</button>
+        <p id="signup-error" class="error-text" hidden></p>
+      </form>
+    </div>
+  </div>
+
+  <div id="confirm-dialog-backdrop" class="dialog-backdrop" hidden>
+    <div class="dialog" role="dialog" aria-modal="true">
+      <h2 id="confirm-dialog-title">Confirm Order</h2>
+      <dl class="stat-list" id="confirm-dialog-details"></dl>
+      <div id="confirm-dialog-real-extra" hidden>
+        <p class="real-warning-text">This order uses REAL funds. Type <code>CONFIRM</code> to proceed.</p>
+        <input id="confirm-dialog-text-input" type="text" autocomplete="off" />
+      </div>
+      <div class="dialog-actions">
+        <button id="confirm-dialog-cancel" type="button">Cancel</button>
+        <button id="confirm-dialog-submit" type="button" class="primary-btn">Submit Order</button>
+      </div>
+      <p id="confirm-dialog-error" class="error-text" hidden></p>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <script src="js/api.js?v=12"></script>
+  <script src="js/auth.js?v=12"></script>
+  <script src="js/charts.js?v=12"></script>
+  <script src="js/mode-switcher.js?v=12"></script>
+  <script src="js/order-confirmation.js?v=12"></script>
+  <script src="js/futures.js?v=12"></script>
+  <script src="js/dashboard.js?v=12"></script>
+  <script src="js/app.js?v=12"></script>
+</body>
+</html>

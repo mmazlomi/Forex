@@ -1,0 +1,832 @@
+:root {
+  color-scheme: light dark;
+  --color-bg: #0f1115;
+  --color-bg-elevated: #161923;
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-fg: #e6e6e6;
+  --color-fg-muted: #9aa0ac;
+  --color-demo: #2563eb;
+  --color-real: #dc2626;
+  --color-warning-bg: #3a2a00;
+  --color-warning-fg: #ffd166;
+  --color-success: #16a34a;
+  --color-danger: #dc2626;
+  --color-accent: #2563eb;
+  --font-mono: "SF Mono", "Cascadia Code", Consolas, "Roboto Mono", monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --color-bg: #f5f6f8;
+    --color-bg-elevated: #ffffff;
+    --color-border: rgba(0, 0, 0, 0.1);
+    --color-fg: #16181d;
+    --color-fg-muted: #5b6270;
+    --color-warning-bg: #fff4d6;
+    --color-warning-fg: #7a5200;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
+
+/* ---------- Header ---------- */
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-header h1 {
+  font-size: 1.15rem;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.header-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+  flex: 1;
+}
+
+.asset-picker {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.7rem;
+  color: var(--color-fg-muted);
+  gap: 0.2rem;
+}
+
+.asset-picker input,
+.asset-picker select {
+  font-size: 0.85rem;
+  padding: 0.3rem 0.4rem;
+}
+
+.symbol-picker {
+  position: relative;
+}
+
+.suggestions-list {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 60;
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+  min-width: 180px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+}
+
+.suggestions-list:not([hidden]) {
+  display: block;
+}
+
+.suggestions-list li {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+  color: var(--color-fg);
+}
+
+.suggestions-list li:hover,
+.suggestions-list li--active {
+  background: var(--color-accent);
+  color: white;
+}
+
+.auto-trade-picker {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+}
+
+.mode-switcher {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mode-btn {
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+}
+
+.mode-btn--active {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+.mode-badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.mode-badge--demo {
+  background: var(--color-demo);
+  color: white;
+}
+
+.mode-badge--real {
+  background: var(--color-real);
+  color: white;
+}
+
+/* ---------- Fatal error banner (see app.js) ---------- */
+
+.fatal-error-banner {
+  background: var(--color-danger);
+  color: white;
+  padding: 0.6rem 1.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* ---------- Risk warning ---------- */
+
+.risk-warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+  border-bottom: 1px solid var(--color-border);
+  padding: 0.75rem 1.5rem;
+  line-height: 1.5;
+  font-size: 0.85rem;
+}
+
+/* ---------- Status bar (always visible, independent of active tab) ---------- */
+
+.status-bar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  padding: 0.4rem 1.5rem;
+  background: var(--color-bg-elevated);
+  border-bottom: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+}
+
+.status-bar__item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.status-bar__label {
+  font-size: 0.65rem;
+  color: var(--color-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.status-bar__value {
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.status-bar__item--stop {
+  margin-left: auto;
+}
+
+.status-emergency--active {
+  color: var(--color-success);
+}
+
+.status-emergency--stopped {
+  color: var(--color-danger);
+}
+
+/* ---------- Tabs ---------- */
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.75rem 1.5rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tab-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.6rem 0.9rem;
+  color: var(--color-fg-muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.tab-btn--active {
+  color: var(--color-fg);
+  border-bottom-color: var(--color-accent);
+  font-weight: 600;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel--active {
+  display: block;
+}
+
+/* ---------- Layout ---------- */
+
+.app-main {
+  padding: 1rem 1.5rem 3rem;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.grid {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.grid--2col {
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 800px) {
+  .grid--2col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.card h2 {
+  margin-top: 0;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.card h3 {
+  font-size: 0.85rem;
+  color: var(--color-fg-muted);
+  margin-bottom: 0.4rem;
+}
+
+/* Spot/Futures section divider inside the Demo Trading / Real Trading tabs — sits directly in
+   the tab panel (not inside a .card), so it needs its own styling rather than relying on
+   `.card h3` above. */
+.market-divider {
+  margin: 1.75rem 0 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 2px solid var(--color-border);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-fg-muted);
+}
+
+.market-divider:first-child {
+  margin-top: 0;
+}
+
+/* ---------- Buttons & forms ---------- */
+
+button {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  color: var(--color-fg);
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+button:hover {
+  filter: brightness(1.15);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.primary-btn {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+.danger-btn {
+  background: var(--color-danger);
+  color: white;
+  border-color: var(--color-danger);
+}
+
+input,
+select {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+}
+
+.order-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.order-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+  color: var(--color-fg-muted);
+  gap: 0.25rem;
+}
+
+.emergency-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* ---------- Data displays ---------- */
+
+.stat-list {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+/* Same reasoning as .dialog-backdrop above: some stat-lists (e.g. the Market Data card)
+   start with the `hidden` attribute and are revealed by JS — an unconditional `display: grid`
+   here would defeat that. */
+.stat-list:not([hidden]) {
+  display: grid;
+}
+
+.stat-list > div {
+  background: var(--color-bg);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+}
+
+.stat-list dt {
+  font-size: 0.7rem;
+  color: var(--color-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stat-list dd {
+  margin: 0.15rem 0 0;
+  font-size: 1rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+/* Every wide table (8+ columns) is wrapped in this — phones can't fit them at full width, and
+   without a dedicated horizontally-scrolling container the table would either crush its columns
+   unreadably or force the *entire page* to scroll sideways. -webkit-overflow-scrolling gives it
+   momentum/inertia scrolling on iOS. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Without a floor, a narrow scroll container would just shrink the table's columns to fit
+   instead of actually scrolling — defeating the point. */
+.table-scroll .data-table {
+  min-width: 560px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.data-table th {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.data-table tbody tr:hover {
+  background: var(--color-bg);
+}
+
+.data-table th {
+  color: var(--color-fg-muted);
+  font-weight: 500;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+
+.empty-state {
+  color: var(--color-fg-muted);
+  font-size: 0.85rem;
+  padding: 0.5rem 0;
+}
+
+.chart-container {
+  height: 320px;
+  width: 100%;
+}
+
+.tv-chart-container {
+  height: 560px;
+  width: 100%;
+}
+
+.attribution {
+  font-size: 0.7rem;
+  color: var(--color-fg-muted);
+  text-align: right;
+  margin: 0.25rem 0 0;
+}
+
+.attribution a {
+  color: inherit;
+}
+
+.hint {
+  font-size: 0.75rem;
+  color: var(--color-fg-muted);
+}
+
+.disclaimer {
+  font-style: italic;
+  color: var(--color-fg-muted);
+  font-size: 0.8rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  color: var(--color-fg-muted);
+  font-size: 0.65rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.leaderboard-row--best td {
+  font-weight: 600;
+}
+
+.raw-output {
+  background: var(--color-bg);
+  padding: 0.75rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.78rem;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.signal-current {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.signal-badge {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.75rem;
+}
+
+.signal-badge--buy { background: var(--color-success); color: white; }
+.signal-badge--sell { background: var(--color-danger); color: white; }
+.signal-badge--hold { background: #6b7280; color: white; }
+.signal-badge--no_data { background: #4b5563; color: white; }
+
+.text-positive { color: var(--color-success); }
+.text-negative { color: var(--color-danger); }
+
+/* ---------- Real trading ---------- */
+
+.real-warning-card {
+  border-color: var(--color-real);
+}
+
+.real-warning-text {
+  color: var(--color-real);
+  font-weight: 600;
+}
+
+/* ---------- Futures trading ---------- */
+
+.futures-warning-card {
+  border-color: var(--color-real);
+}
+
+/* ---------- Account bar / auth gate ---------- */
+
+.account-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--color-fg-muted);
+}
+
+.auth-gate-backdrop {
+  background: var(--color-bg);
+  z-index: 2000;
+}
+
+.auth-gate-dialog {
+  max-width: 380px;
+}
+
+.auth-gate-tabs {
+  padding: 0;
+  margin: 0.75rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* Same reasoning as .dialog-backdrop / .stat-list above: an unconditional `display` here would
+   override the browser's `[hidden] { display: none }` rule regardless of specificity, so the
+   login and signup forms would stay visually stacked together even after JS sets one's
+   `hidden` to true to switch tabs. */
+.auth-form:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.auth-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+  color: var(--color-fg-muted);
+  gap: 0.25rem;
+}
+
+/* Safari (desktop and iOS) doesn't reliably stretch <input>/<select> to fill a flex column the
+   way Chrome/Firefox do — they keep their intrinsic ~20-character width instead, leaving a
+   narrow input floating inside a full-width label/dialog. Explicit width:100% makes this
+   consistent everywhere instead of depending on flex-stretch defaults. */
+.auth-form input,
+.order-form input,
+.order-form select {
+  width: 100%;
+}
+
+/* ---------- Confirmation dialog ---------- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+/* Setting `display` unconditionally on an element with the `hidden` attribute defeats
+   `hidden` entirely — an author stylesheet's `display` always beats the UA's
+   `[hidden] { display: none }` rule regardless of specificity, so the backdrop would stay
+   visually shown even after JS sets `.hidden = true`. Scoping `display: flex` to
+   `:not([hidden])` keeps `hidden` authoritative. */
+.dialog-backdrop:not([hidden]) {
+  display: flex;
+}
+
+.dialog {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  max-width: 480px;
+  width: 100%;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.error-text {
+  color: var(--color-danger);
+  font-size: 0.8rem;
+}
+
+/* ---------- Toasts ---------- */
+
+.toast-container {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  z-index: 1100;
+}
+
+.toast {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.82rem;
+  max-width: 320px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.toast--error {
+  border-color: var(--color-danger);
+}
+
+.toast--success {
+  border-color: var(--color-success);
+}
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 700px) {
+  .app-header {
+    padding: 0.75rem 1rem;
+    gap: 0.6rem;
+  }
+
+  .app-header h1 {
+    font-size: 1rem;
+  }
+
+  .header-controls {
+    gap: 0.5rem;
+  }
+
+  /* Two-per-row grid of header fields instead of an unpredictable multi-width wrap. */
+  .header-controls > * {
+    flex: 1 1 45%;
+    min-width: 130px;
+  }
+
+  .asset-picker input,
+  .asset-picker select {
+    width: 100%;
+    font-size: 16px; /* under 16px triggers an automatic zoom-in on focus in iOS Safari */
+  }
+
+  .auto-trade-picker,
+  .symbol-picker,
+  .mode-switcher,
+  .account-bar {
+    flex: 1 1 100%;
+  }
+
+  .mode-switcher,
+  .account-bar {
+    justify-content: space-between;
+  }
+
+  .risk-warning {
+    padding: 0.6rem 1rem;
+    font-size: 0.78rem;
+  }
+
+  .status-bar {
+    padding: 0.4rem 1rem;
+    gap: 0.5rem 1rem;
+  }
+
+  .status-bar__item--stop {
+    margin-left: 0;
+  }
+
+  /* A single horizontally-scrollable row instead of wrapping 6 tab buttons across multiple
+     lines, which eats a lot of vertical space on a short phone viewport. Excludes
+     .auth-gate-tabs — it's always just 2 short buttons (Log In / Sign Up) inside an already-
+     padded dialog, and this rule's padding/scroll behavior only made it misaligned there. */
+  .tabs:not(.auth-gate-tabs) {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 0.5rem 1rem 0;
+  }
+
+  .tab-btn {
+    flex: 0 0 auto;
+    padding: 0.55rem 0.7rem;
+    font-size: 0.82rem;
+    white-space: nowrap;
+  }
+
+  .app-main {
+    padding: 0.75rem 0.75rem 2rem;
+  }
+
+  .card {
+    padding: 0.7rem 0.8rem;
+  }
+
+  /* Full vertical stack instead of several fields side by side — much easier to tap accurately
+     and read than a wrapped horizontal row on a narrow screen. */
+  .order-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .order-form label {
+    width: 100%;
+  }
+
+  .order-form input,
+  .order-form select,
+  .auth-form input {
+    font-size: 16px;
+  }
+
+  .order-form button {
+    width: 100%;
+  }
+
+  .tv-chart-container {
+    height: 380px;
+  }
+
+  /* Keeps a tall dialog (e.g. the signup form plus its hint/error text) from being pushed off
+     the bottom of the viewport when the on-screen keyboard is open. Also trims the backdrop's
+     and dialog's own padding — on a ~360px-wide phone, the default 1rem backdrop + 1.25rem
+     dialog padding on each side leaves under 250px for actual content. */
+  .dialog-backdrop {
+    padding: 0.5rem;
+  }
+
+  .dialog {
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 1rem;
+  }
+
+  .suggestions-list {
+    max-width: calc(100vw - 3rem);
+  }
+
+  .toast-container {
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: 0.75rem;
+  }
+
+  .toast {
+    max-width: none;
+  }
+}

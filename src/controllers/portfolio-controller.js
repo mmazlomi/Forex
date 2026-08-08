@@ -1,0 +1,74 @@
+'use strict';
+
+const portfolioService = require('../services/portfolio/portfolio-service');
+const portfolioRepository = require('../database/repositories/portfolio-repository');
+const exchangeClientFactory = require('../services/exchanges/exchange-client-factory');
+const { resolveRealCredentials } = require('../services/exchanges/real-credentials-resolver');
+const { sendSuccess, sendError } = require('../utils/http-response');
+const logger = require('../services/logging/logger');
+
+async function getPortfolio(req, res) {
+  const mode = req.tradingMode;
+  const userId = req.user.id;
+  const snapshot = portfolioService.getSnapshot(mode, userId);
+  const pnl = portfolioService.getPnlSummary(mode, userId);
+  const openPositions = await portfolioService.getOpenPositionsWithUnrealizedPnl(mode, userId);
+  const unrealizedPnl = openPositions.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0), 0);
+
+  sendSuccess(res, {
+    ...snapshot,
+    openPositions,
+    pnl: { ...pnl, unrealizedPnl, netPnl: pnl.totalRealizedPnl + unrealizedPnl },
+  });
+}
+
+// Real Trading's balance previously only ever synced from the live exchange as a side effect of
+// actually placing an order (real-orders.js) — there was no way to just check it, so a freshly
+// entered API key/Token showed an empty $0 portfolio until the first trade attempt. This is a
+// read-only exchange call (fetchBalance only, no order placed), so — unlike placing an order —
+// it deliberately does NOT require ENABLE_LIVE_TRADING=true; viewing your balance isn't trading.
+async function syncRealBalance(req, res) {
+  const userId = req.user.id;
+  const { symbol, exchange } = req.body || {};
+  if (!symbol || !exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'symbol and exchange are required (used to pick which quote-currency wallet to read).');
+  }
+
+  const credentials = resolveRealCredentials(userId);
+  if (!credentials.name || !credentials.apiKey) {
+    return sendError(res, 'MISSING_REAL_CREDENTIALS', 'No Real exchange credentials are configured yet.');
+  }
+
+  const quoteCurrency = symbol.split('/')[1];
+  if (!quoteCurrency) {
+    return sendError(res, 'VALIDATION_ERROR', `"${symbol}" doesn't look like a BASE/QUOTE symbol.`);
+  }
+
+  const client = exchangeClientFactory.getRealExchange(userId);
+  let balance;
+  try {
+    balance = await client.fetchBalance();
+  } catch (err) {
+    logger.error('portfolio', `Failed to sync Real balance from ${credentials.name}: ${err.message}`, {}, 'real');
+    return sendError(res, 'EXCHANGE_UNAVAILABLE', `Could not fetch balance from ${credentials.name}: ${err.message}`, 422);
+  }
+
+  // portfolio.balance itself stays a single number scoped to whatever quote currency you're
+  // about to trade (real-orders.js's position-sizing math needs exactly one number) — but an
+  // exchange like Nobitex can hold several currencies at once (IRT, USDT, BTC, ...), so the full
+  // breakdown from this same fetchBalance() call is persisted alongside it (setBalance's third
+  // arg) so viewing the Real tab shows it immediately on the next page load/tab switch too, not
+  // just right after this sync call.
+  const liveBalanceQuote = balance.free?.[quoteCurrency] ?? 0;
+  const walletBalances = Object.entries(balance.free || {})
+    .filter(([, amount]) => amount > 0)
+    .sort(([, a], [, b]) => b - a)
+    .map(([currency, amount]) => ({ currency, amount }));
+  portfolioRepository.setBalance('real', userId, liveBalanceQuote, walletBalances);
+  logger.info('portfolio', `Real balance synced from ${credentials.name}: ${liveBalanceQuote} ${quoteCurrency}`, {}, 'real');
+
+  const snapshot = portfolioService.getSnapshot('real', userId);
+  sendSuccess(res, snapshot, `Balance synced from ${credentials.name} (${quoteCurrency}).`);
+}
+
+module.exports = { getPortfolio, syncRealBalance };

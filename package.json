@@ -1,0 +1,23 @@
+{
+  "name": "trading-bot",
+  "version": "0.1.0",
+  "description": "Browser-based trading platform combining technical and fundamental analysis for Backtest, Demo, and Real trading modes. Not financial advice.",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "ccxt": "^4.5.66",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "technicalindicators": "^3.1.0",
+    "uuid": "^11.1.0"
+  }
+}
