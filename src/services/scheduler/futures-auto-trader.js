@@ -17,6 +17,7 @@ const config = require('../../../config/config');
 const LIQUIDATION_WARNING_THRESHOLD_PERCENT = 10;
 
 let intervalHandle = null;
+let isRunning = false;
 
 /**
  * Whether REAL (leveraged, unattended) trading is allowed *at all* right now — the pure,
@@ -170,7 +171,17 @@ async function runCycle() {
 function start() {
   if (intervalHandle) return;
   intervalHandle = setInterval(() => {
-    runCycle().catch((err) => logger.error('futures-auto-trader', `Futures auto-trade cycle crashed: ${err.message}`));
+    // See auto-trader.js's identical guard: prevents overlapping cycles from piling up when a
+    // cycle takes longer than the poll interval (e.g. a slow exchange — KuCoin's futures
+    // endpoint in particular is documented elsewhere in this file as sometimes unreachable).
+    if (isRunning) {
+      logger.warn('futures-auto-trader', 'Skipped futures auto-trade cycle: previous cycle is still running');
+      return;
+    }
+    isRunning = true;
+    runCycle()
+      .catch((err) => logger.error('futures-auto-trader', `Futures auto-trade cycle crashed: ${err.message}`))
+      .finally(() => { isRunning = false; });
   }, config.futuresAutoTradeIntervalMs);
   if (typeof intervalHandle.unref === 'function') intervalHandle.unref();
   logger.info('futures-auto-trader', `Futures AI auto-trader started (interval ${config.futuresAutoTradeIntervalMs}ms, real trading ${config.enableFuturesAutoTrading ? 'ALLOWED (subject to credential gates + the Real watchlist)' : 'disabled'})`);

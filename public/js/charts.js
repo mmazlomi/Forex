@@ -68,6 +68,33 @@ const Charts = (() => {
     return Boolean(EXCHANGE_TV_PREFIX[String(exchange || '').toLowerCase()]);
   }
 
+  // Persists the widget's chart type (Candles/Bars/Line/Area/Heikin Ashi/...) across symbol
+  // switches and page reloads — otherwise every createTradingViewWidget() call tears down and
+  // recreates the iframe from scratch (see its innerHTML reset below), silently discarding
+  // whatever style the user last picked from TradingView's own toolbar back to the hardcoded
+  // default. Scoped to just the chart-type style code, not TradingView's full save()/load()
+  // widget state (which also bundles symbol/interval/drawings) — this app already owns
+  // symbol/interval via its own asset/timeframe selectors, so restoring those from a stale saved
+  // state would fight the user's current selection.
+  const CHART_TYPE_STORAGE_KEY = 'tv-chart-type';
+  const DEFAULT_CHART_TYPE = '1'; // TradingView style code: 1 = Candles
+
+  function getSavedChartType() {
+    try {
+      return localStorage.getItem(CHART_TYPE_STORAGE_KEY) || DEFAULT_CHART_TYPE;
+    } catch {
+      return DEFAULT_CHART_TYPE; // localStorage unavailable (e.g. private browsing) — fall back silently
+    }
+  }
+
+  function saveChartType(type) {
+    try {
+      localStorage.setItem(CHART_TYPE_STORAGE_KEY, String(type));
+    } catch {
+      // ignore — persistence is a nice-to-have, not worth surfacing an error for
+    }
+  }
+
   /**
    * Embeds TradingView's actual Advanced Chart widget (loaded via the `tv.js` embed script in
    * index.html) — real drawing tools, full indicator/study library, chart type switcher
@@ -83,13 +110,13 @@ const Charts = (() => {
 
     const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     // eslint-disable-next-line no-undef -- TradingView is defined by the externally-loaded tv.js
-    new TradingView.widget({
+    const tvWidget = new TradingView.widget({
       autosize: true,
       symbol: mapToTradingViewSymbol(symbol, exchange, assetType),
       interval: mapTimeframeToTvInterval(timeframe),
       timezone: 'Etc/UTC',
       theme: dark ? 'dark' : 'light',
-      style: '1',
+      style: getSavedChartType(),
       locale: 'en',
       enable_publishing: false,
       allow_symbol_change: true,
@@ -98,6 +125,25 @@ const Charts = (() => {
       details: true,
       container_id: containerId,
     });
+
+    // The widget's JS API (onChartReady/subscribe) is only available once it fires ready; this
+    // is best-effort — if TradingView ever changes this API, the chart itself still works, it
+    // just stops remembering the chart type. onAutoSaveNeeded fires on any persistable change,
+    // including chart-type switches, which is TradingView's own documented hook for this.
+    try {
+      tvWidget.onChartReady(() => {
+        tvWidget.subscribe('onAutoSaveNeeded', () => {
+          try {
+            saveChartType(tvWidget.chart().getChartType());
+          } catch {
+            // widget API surface didn't match what we expected — skip silently
+          }
+        });
+      });
+    } catch {
+      // tv.js didn't expose the JS API this relies on — chart still renders with the last-saved
+      // (or default) style, it just won't pick up further in-widget changes this session
+    }
 
     return {
       destroy() {

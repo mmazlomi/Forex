@@ -36,7 +36,7 @@
         </select>
       </label>
       <label class="asset-picker" id="strategy-picker">
-        <span id="strategy-select-label" title="Freqtrade-style pluggable strategy used by the Generate Signal button below. Per-watchlist-asset strategy is set on the Watchlist tab instead.">Strategy</span>
+        <span id="strategy-select-label" title="Freqtrade-style pluggable strategy used by the Generate Signal button below. Per-asset strategy is set on the Signals Setting tab instead.">Strategy</span>
         <select id="strategy-select"></select>
       </label>
       <button id="load-asset-btn" type="button">Load</button>
@@ -82,7 +82,7 @@
     <button class="tab-btn tab-btn--active" data-tab="dashboard" type="button">Dashboard</button>
     <button class="tab-btn" data-tab="demo" type="button">Demo Trading</button>
     <button class="tab-btn" data-tab="real" type="button">Real Trading</button>
-    <button class="tab-btn" data-tab="watchlist" type="button">Watchlist</button>
+    <button class="tab-btn" data-tab="watchlist" type="button">Signals Setting</button>
     <button class="tab-btn" data-tab="backtest" type="button">Backtest</button>
     <button class="tab-btn" data-tab="risk" type="button">Risk Settings</button>
     <button class="tab-btn" data-tab="system" type="button">System &amp; Logs</button>
@@ -147,16 +147,16 @@
       </div>
 
       <div class="card" id="watchlist-signal-card">
-        <h2>Watchlist Signals</h2>
-        <button id="generate-watchlist-signals-btn" type="button">Generate for Watchlist</button>
-        <p class="hint">Runs signal generation for every asset on your Watchlist, using each one's own saved strategy. Shows each asset's most recently generated signal even before you click the button — it doesn't clear on page refresh.</p>
+        <h2>Signals Setting Results</h2>
+        <button id="generate-watchlist-signals-btn" type="button">Generate for Signals Setting</button>
+        <p class="hint">Runs signal generation for every asset in your Signals Setting, using each one's own saved strategy. Shows each asset's most recently generated signal even before you click the button — it doesn't clear on page refresh.</p>
         <div class="table-scroll">
           <table class="data-table">
             <thead><tr><th>Symbol</th><th>Exchange</th><th>Strategy</th><th>Time (Local)</th><th>Status</th><th>Score</th><th>Entry</th><th>Stop</th><th>Take</th><th>R:R</th></tr></thead>
             <tbody id="watchlist-signals-body"></tbody>
           </table>
         </div>
-        <div id="watchlist-signals-empty" class="empty-state">Add assets to your Watchlist to use this.</div>
+        <div id="watchlist-signals-empty" class="empty-state">Add assets to your Signals Setting to use this.</div>
       </div>
     </section>
 
@@ -178,7 +178,7 @@
       </div>
       <div class="card">
         <h2>Place Demo Order</h2>
-        <p class="hint">Trading: <strong id="spot-demo-current-symbol">-</strong> (set from the header above, or via a "Trade Demo" button on the Watchlist tab).</p>
+        <p class="hint">Trading: <strong id="spot-demo-current-symbol">-</strong> (set from the header above, or via a "Trade Demo" button on the Signals Setting tab).</p>
         <form id="demo-order-form" class="order-form">
           <label>Side
             <select name="side"><option value="buy">Buy</option><option value="sell">Sell</option></select>
@@ -234,7 +234,7 @@
       </div>
       <div class="card">
         <h2>Place Demo Futures Order</h2>
-        <p class="hint">Trading: <strong id="futures-demo-current-symbol">-</strong> (set via the Futures Asset picker or a "Trade" button on the Watchlist tab).</p>
+        <p class="hint">Trading: <strong id="futures-demo-current-symbol">-</strong> (set via the Futures Asset picker or a "Trade" button on the Signals Setting tab).</p>
         <form id="futures-demo-order-form" class="order-form">
           <label>Action
             <select name="action">
@@ -320,7 +320,7 @@
       </div>
       <div class="card" id="real-order-card" hidden>
         <h2>Place Real Order</h2>
-        <p class="hint">Trading: <strong id="spot-real-current-symbol">-</strong> (set from the header above, or via a "Trade Real" button on the Watchlist tab).</p>
+        <p class="hint">Trading: <strong id="spot-real-current-symbol">-</strong> (set from the header above, or via a "Trade Real" button on the Signals Setting tab).</p>
         <form id="real-order-form" class="order-form">
           <label>Side
             <select name="side"><option value="buy">Buy</option><option value="sell">Sell</option></select>
@@ -381,7 +381,7 @@
       </div>
       <div class="card" id="futures-real-order-card" hidden>
         <h2>Place Real Futures Order</h2>
-        <p class="hint">Trading: <strong id="futures-real-current-symbol">-</strong> (set via the Futures Asset picker or a "Trade" button on the Watchlist tab).</p>
+        <p class="hint">Trading: <strong id="futures-real-current-symbol">-</strong> (set via the Futures Asset picker or a "Trade" button on the Signals Setting tab).</p>
         <form id="futures-real-order-form" class="order-form">
           <label>Action
             <select name="action">
@@ -406,10 +406,12 @@
       </div>
     </section>
 
-    <!-- Watchlist tab: spot + futures demo + futures real, all watchlist management and "trade this" entry points -->
+    <!-- Signals Setting tab (formerly "Watchlist"): spot + futures demo + futures real, all
+         per-asset signal config and "trade this" entry points. Internal element ids/data-tab
+         value keep the "watchlist" name — purely a display-label rename, not a data-model one. -->
     <section class="tab-panel" id="tab-watchlist">
       <div class="card">
-        <h2>Spot Watchlist</h2>
+        <h2>Spot Signals Setting</h2>
         <p class="hint">Every field below is edited in place — change Strategy and it saves automatically as
           soon as you click away (no separate Save button); the Auto-Trade checkbox takes effect the moment
           you tick it. "Trade Demo"/"Trade Real" load that symbol into the header and jump straight to the
@@ -418,18 +420,20 @@
           when a majority of them agree — see the Strategy cell's tooltip for which ones are currently
           selected. Backtested win rate reflects each strategy's technical performance only (historical
           fundamentals aren't available for backtesting), even though live trades still use each selected
-          strategy's real technical+fundamental weighting.</p>
+          strategy's real technical+fundamental weighting. Price/24h % are live reference data (same feed as
+          the Market Data card), refreshed each time this list loads — not used by the strategy/auto-trade
+          logic itself.</p>
         <div class="header-controls">
           <button id="add-watchlist-btn" type="button">+ Add current symbol (from header above)</button>
-          <button id="enable-all-autotrade-btn" type="button" title="Turns on AI Auto-Trade (Demo) for every asset currently on your Spot Watchlist, in one click.">🤖 Enable Auto-Trade for All</button>
+          <button id="enable-all-autotrade-btn" type="button" title="Turns on AI Auto-Trade (Demo) for every asset currently in your Spot Signals Setting, in one click.">🤖 Enable Auto-Trade for All</button>
         </div>
         <div class="table-scroll">
-          <table class="data-table">
-            <thead><tr><th>Symbol</th><th>Exchange</th><th>Type</th><th>Timeframe</th><th>Strategy</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade (Demo)</th><th></th><th></th><th></th></tr></thead>
+          <table class="data-table cmc-table">
+            <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Type</th><th>Timeframe</th><th>Strategy</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade (Demo)</th><th></th><th></th><th></th></tr></thead>
             <tbody id="watchlist-spot-body"></tbody>
           </table>
         </div>
-        <div id="watchlist-spot-empty" class="empty-state">Load an asset above and add it to start your Spot Watchlist.</div>
+        <div id="watchlist-spot-empty" class="empty-state">Load an asset above and add it to start your Spot Signals Setting.</div>
       </div>
 
       <div class="card">
@@ -440,22 +444,22 @@
             <input id="futures-symbol-input" type="text" value="BTC/USDT:USDT" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
             <ul id="futures-symbol-suggestions-list" class="suggestions-list" hidden></ul>
           </label>
-          <button id="futures-add-demo-watchlist-btn" type="button">+ Add to Demo Watchlist</button>
-          <button id="futures-add-real-watchlist-btn" type="button" hidden>+ Add to Real Watchlist</button>
+          <button id="futures-add-demo-watchlist-btn" type="button">+ Add to Demo Signals Setting</button>
+          <button id="futures-add-real-watchlist-btn" type="button" hidden>+ Add to Real Signals Setting</button>
         </div>
         <p class="hint">KuCoin USDT-margined perpetual futures only, in ccxt's unified symbol format
           (BASE/QUOTE:SETTLE, e.g. BTC/USDT:USDT) — a different shape from Spot's BASE/QUOTE. Demo and Real
-          watchlists are fully independent — adding a symbol to one does not add it to the other, and each
-          keeps its own leverage/strategy/auto-trade setting even for the same symbol.</p>
+          Signals Setting lists are fully independent — adding a symbol to one does not add it to the other,
+          and each keeps its own leverage/strategy/auto-trade setting even for the same symbol.</p>
       </div>
 
       <div class="card">
-        <h2>Futures Watchlist — Demo &amp; AI Auto-Trade</h2>
+        <h2>Futures Signals Setting — Demo &amp; AI Auto-Trade</h2>
         <p class="hint">🤖 Demo auto-trade reuses the same signal engine as Spot's, with no real stakes.</p>
-        <button id="futures-demo-enable-all-autotrade-btn" type="button" title="Turns on AI Auto-Trade for every symbol currently on your Demo Futures Watchlist, in one click.">🤖 Enable Auto-Trade for All</button>
+        <button id="futures-demo-enable-all-autotrade-btn" type="button" title="Turns on AI Auto-Trade for every symbol currently in your Demo Futures Signals Setting, in one click.">🤖 Enable Auto-Trade for All</button>
         <div class="table-scroll">
-          <table class="data-table">
-            <thead><tr><th>Symbol</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th></th><th></th></tr></thead>
+          <table class="data-table cmc-table">
+            <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th></th><th></th></tr></thead>
             <tbody id="futures-demo-watchlist-body"></tbody>
           </table>
         </div>
@@ -463,10 +467,10 @@
       </div>
 
       <div class="card">
-        <h2>Futures Watchlist — Real &amp; AI Auto-Trade</h2>
-        <p class="hint" id="futures-real-watchlist-locked-hint">Unlock Real Trading from the Real Trading tab first to manage this watchlist.</p>
+        <h2>Futures Signals Setting — Real &amp; AI Auto-Trade</h2>
+        <p class="hint" id="futures-real-watchlist-locked-hint">Unlock Real Trading from the Real Trading tab first to manage this Signals Setting.</p>
         <div id="futures-real-watchlist-panel" hidden>
-          <p class="hint">Fully independent from the Demo Futures Watchlist above — a symbol here is its
+          <p class="hint">Fully independent from the Demo Futures Signals Setting above — a symbol here is its
             own separate entry, with its own leverage/strategy/auto-trade setting. 🤖 Auto-trade here is a
             deliberate, higher-friction opt-in: even when ticked, it does nothing unless the server operator
             has ALSO set <code>ENABLE_FUTURES_AUTO_TRADING=true</code> in <code>.env</code> and restarted the
@@ -474,8 +478,8 @@
             a timer, with leverage capped at a server-configured maximum. There is deliberately no
             "enable for all" bulk button here — each symbol is a conscious, one-at-a-time decision.</p>
           <div class="table-scroll">
-            <table class="data-table">
-              <thead><tr><th>Symbol</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th></th><th></th></tr></thead>
+            <table class="data-table cmc-table">
+              <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th></th><th></th></tr></thead>
               <tbody id="futures-real-watchlist-body"></tbody>
             </table>
           </div>
@@ -576,7 +580,7 @@
   <div id="auth-gate-backdrop" class="dialog-backdrop auth-gate-backdrop">
     <div class="dialog auth-gate-dialog">
       <h2>Trading Bot</h2>
-      <p class="hint">Sign in to continue. Everything is private to your account — Watchlist, Demo/Real portfolios, orders, risk settings, and exchange credentials. The only exception is the global emergency stop, which any logged-in user can trigger to halt trading instance-wide.</p>
+      <p class="hint">Sign in to continue. Everything is private to your account — Signals Setting, Demo/Real portfolios, orders, risk settings, and exchange credentials. The only exception is the global emergency stop, which any logged-in user can trigger to halt trading instance-wide.</p>
       <nav class="tabs auth-gate-tabs">
         <button id="auth-tab-login" class="tab-btn tab-btn--active" type="button">Log In</button>
         <button id="auth-tab-signup" class="tab-btn" type="button">Sign Up</button>

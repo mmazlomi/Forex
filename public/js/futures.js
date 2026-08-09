@@ -51,6 +51,45 @@ const Futures = (() => {
     return fmt(n, digits);
   }
 
+  // Matches TradingView's own price-axis behavior — see dashboard.js's identical fmtPrice for the
+  // full rationale (kept as a private copy per this file's established "deliberately not shared"
+  // convention with dashboard.js).
+  function fmtPrice(n) {
+    if (n === null || n === undefined || Number.isNaN(n)) return '-';
+    const num = Number(n);
+    const abs = Math.abs(num);
+    let digits = 2;
+    if (abs > 0 && abs < 1) {
+      const leadingZeros = Math.max(0, -Math.floor(Math.log10(abs)) - 1);
+      digits = Math.min(8, leadingZeros + 4);
+    }
+    return fmt(num, digits);
+  }
+
+  // CoinMarketCap-style market list helpers for the Futures Signals Setting tables — private
+  // copies of dashboard.js's identical helpers, per this file's established convention.
+  function hashHue(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i += 1) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+    return hash % 360;
+  }
+
+  function symbolAvatar(symbol) {
+    const base = String(symbol || '').split('/')[0] || '?';
+    const avatar = el('span', { class: 'cmc-symbol-avatar' }, base.slice(0, 2).toUpperCase());
+    avatar.style.background = `hsl(${hashHue(base)}, 55%, 42%)`;
+    return avatar;
+  }
+
+  function changeBadge(percent) {
+    if (percent === null || percent === undefined || Number.isNaN(percent)) {
+      return el('span', { class: 'cmc-change cmc-change--flat' }, '-');
+    }
+    const direction = percent > 0 ? 'up' : percent < 0 ? 'down' : 'flat';
+    const arrow = direction === 'up' ? '▲' : direction === 'down' ? '▼' : '';
+    return el('span', { class: `cmc-change cmc-change--${direction}` }, `${arrow} ${fmt(Math.abs(percent), 2)}%`.trim());
+  }
+
   // Private copy, deliberately not shared with dashboard.js's own formatTimestamp() — see this
   // file's header comment. Every stored timestamp is a UTC ISO-8601 string; this renders it in
   // the browser's own local timezone (no `timeZone` option passed to Intl.DateTimeFormat, so it
@@ -151,15 +190,15 @@ const Futures = (() => {
       const unrealizedCell = el('td', {}, p.unrealizedPnl != null ? fmt(p.unrealizedPnl) : '-');
       if (p.unrealizedPnl > 0) unrealizedCell.className = 'text-positive';
       else if (p.unrealizedPnl < 0) unrealizedCell.className = 'text-negative';
-      const liqCell = el('td', {}, p.liquidation_price != null ? fmt(p.liquidation_price) : '-');
+      const liqCell = el('td', {}, p.liquidation_price != null ? fmtPrice(p.liquidation_price) : '-');
       if (typeof p.liquidationDistancePercent === 'number' && p.liquidationDistancePercent < 10) {
         liqCell.className = 'text-negative';
         liqCell.title = `Only ${fmt(p.liquidationDistancePercent, 1)}% away from liquidation at the current price.`;
       }
       row.append(
         el('td', {}, p.symbol), el('td', {}, p.side), el('td', {}, `${p.leverage}x`), el('td', {}, fmt(p.qty, 6)),
-        el('td', {}, fmt(p.entry_price)), el('td', {}, p.currentPrice != null ? fmt(p.currentPrice) : '-'),
-        unrealizedCell, liqCell, el('td', {}, fmt(p.stop_loss)), el('td', {}, fmt(p.take_profit))
+        el('td', {}, fmtPrice(p.entry_price)), el('td', {}, p.currentPrice != null ? fmtPrice(p.currentPrice) : '-'),
+        unrealizedCell, liqCell, el('td', {}, fmtPrice(p.stop_loss)), el('td', {}, fmtPrice(p.take_profit))
       );
       body.appendChild(row);
     });
@@ -171,7 +210,7 @@ const Futures = (() => {
       const row = el('tr');
       row.append(
         el('td', {}, formatTimestamp(o.created_at_utc)), el('td', {}, o.symbol || '-'), el('td', {}, o.action.replace('_', ' ')), el('td', {}, `${o.leverage}x`),
-        el('td', {}, fmt(o.qty, 6)), el('td', {}, fmt(o.price)), el('td', {}, o.status), el('td', {}, o.reject_reason || '')
+        el('td', {}, fmt(o.qty, 6)), el('td', {}, fmtPrice(o.price)), el('td', {}, o.status), el('td', {}, o.reject_reason || '')
       );
       body.appendChild(row);
     });
@@ -302,9 +341,31 @@ const Futures = (() => {
       clear(body);
       emptyEl.hidden = assets.length > 0;
 
-      assets.forEach((asset) => {
+      assets.forEach((asset, index) => {
         const row = el('tr');
-        row.append(el('td', {}, asset.symbol));
+        row.appendChild(el('td', { class: 'cmc-rank' }, String(index + 1)));
+
+        const symbolCell = el('td');
+        const symbolWrap = el('div', { class: 'cmc-symbol-cell' });
+        symbolWrap.appendChild(symbolAvatar(asset.symbol));
+        symbolWrap.appendChild(el('span', { class: 'cmc-symbol-name' }, asset.symbol));
+        symbolCell.appendChild(symbolWrap);
+        row.appendChild(symbolCell);
+
+        // Live price/24h % via the futures snapshot (market: 'futures' routes /api/market-data
+        // through the KuCoin futures client — see market-controller.js — since the spot client
+        // has no data for a futures-only symbol like BTC/USDT:USDT).
+        const priceCell = el('td', { class: 'cmc-price' }, '…');
+        const changeCell = el('td');
+        row.appendChild(priceCell);
+        row.appendChild(changeCell);
+        Api.getMarketData(asset.symbol, asset.exchange || 'kucoin', 'futures').then((snapshot) => {
+          priceCell.textContent = fmtPrice(snapshot.price);
+          clear(changeCell);
+          changeCell.appendChild(changeBadge(snapshot.changePercent24h));
+        }).catch(() => {
+          priceCell.textContent = '-';
+        });
 
         const timeframeSelect = el('select');
         TIMEFRAME_OPTIONS.forEach((tf) => {
@@ -417,7 +478,7 @@ const Futures = (() => {
         body.appendChild(row);
       });
     } catch (err) {
-      toast(`Failed to load ${mode} futures watchlist: ${err.message}`, 'error');
+      toast(`Failed to load ${mode} futures Signals Setting: ${err.message}`, 'error');
     }
   }
 
@@ -434,10 +495,10 @@ const Futures = (() => {
     }
     try {
       await Api.addFuturesAsset(mode, { symbol, exchange: EXCHANGE, leverage: 3 });
-      toast(`${symbol} added to your ${mode === 'real' ? 'Real' : 'Demo'} Futures Watchlist.`, 'success');
+      toast(`${symbol} added to your ${mode === 'real' ? 'Real' : 'Demo'} Futures Signals Setting.`, 'success');
       await refreshWatchlist(mode);
     } catch (err) {
-      toast(`Failed to add to watchlist: ${err.message}`, 'error');
+      toast(`Failed to add to Signals Setting: ${err.message}`, 'error');
     }
   }
 
@@ -450,7 +511,7 @@ const Futures = (() => {
   async function enableAutoTradeForAll() {
     const assets = watchlistCache.demo;
     if (assets.length === 0) {
-      toast('Your Demo Futures Watchlist is empty — add a symbol first.', 'error');
+      toast('Your Demo Futures Signals Setting is empty — add a symbol first.', 'error');
       return;
     }
     const btn = document.getElementById('futures-demo-enable-all-autotrade-btn');
@@ -471,7 +532,7 @@ const Futures = (() => {
     btn.textContent = '🤖 Enable Auto-Trade for All';
     await refreshWatchlist('demo');
     if (failures.length === 0) {
-      toast(`Demo AI Auto-Trade enabled for all ${succeeded} Demo Futures Watchlist symbol(s).`, 'success');
+      toast(`Demo AI Auto-Trade enabled for all ${succeeded} Demo Futures Signals Setting symbol(s).`, 'success');
     } else {
       toast(`Enabled ${succeeded}/${assets.length}. Failed: ${failures.join('; ')}`, 'error');
     }

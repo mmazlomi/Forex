@@ -19,6 +19,7 @@ const config = require('../../../config/config');
 // longer default interval — see config.js's strategySelectionIntervalMs.
 
 let intervalHandle = null;
+let isRunning = false;
 
 /**
  * Ranks every built-in strategy for one asset by backtested win rate over the configured rolling
@@ -117,7 +118,17 @@ async function runCycle() {
 function start() {
   if (intervalHandle) return;
   intervalHandle = setInterval(() => {
-    runCycle().catch((err) => logger.error('strategy-selector', `Strategy-selection cycle crashed: ${err.message}`));
+    // See auto-trader.js's identical guard: prevents overlapping cycles from piling up when a
+    // cycle takes longer than the interval (each asset runs a real backtest, so this is the
+    // most expensive of the five schedulers per cycle).
+    if (isRunning) {
+      logger.warn('strategy-selector', 'Skipped strategy-selection cycle: previous cycle is still running');
+      return;
+    }
+    isRunning = true;
+    runCycle()
+      .catch((err) => logger.error('strategy-selector', `Strategy-selection cycle crashed: ${err.message}`))
+      .finally(() => { isRunning = false; });
   }, config.strategySelectionIntervalMs);
   if (typeof intervalHandle.unref === 'function') intervalHandle.unref();
   logger.info('strategy-selector', `Strategy selector started (interval ${config.strategySelectionIntervalMs}ms, top ${config.strategySelectionCount} by win rate over a ${config.strategySelectionLookbackDays}d rolling lookback)`);

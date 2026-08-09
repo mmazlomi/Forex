@@ -24,6 +24,7 @@ const config = require('../../../config/config');
 // moment either is crossed.
 
 let intervalHandle = null;
+let isRunning = false;
 
 /** Spot is long-only (side is always 'buy') — stop-loss triggers on price falling to/through it,
  *  take-profit on price rising to/through it. Returns which one fired, or null. */
@@ -149,7 +150,16 @@ async function runCycle() {
 function start() {
   if (intervalHandle) return;
   intervalHandle = setInterval(() => {
-    runCycle().catch((err) => logger.error('position-risk-watcher', `Position-risk cycle crashed: ${err.message}`));
+    // See auto-trader.js's identical guard: prevents overlapping cycles from piling up when a
+    // cycle takes longer than the poll interval (e.g. a slow exchange).
+    if (isRunning) {
+      logger.warn('position-risk-watcher', 'Skipped position-risk cycle: previous cycle is still running');
+      return;
+    }
+    isRunning = true;
+    runCycle()
+      .catch((err) => logger.error('position-risk-watcher', `Position-risk cycle crashed: ${err.message}`))
+      .finally(() => { isRunning = false; });
   }, config.pendingOrdersPollIntervalMs);
   if (typeof intervalHandle.unref === 'function') intervalHandle.unref();
   logger.info('position-risk-watcher', `Position-risk watcher started (interval ${config.pendingOrdersPollIntervalMs}ms)`);

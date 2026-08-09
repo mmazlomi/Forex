@@ -64,6 +64,51 @@
     return fmt(n, digits);
   }
 
+  // Matches TradingView's own price-axis behavior: precision scales with magnitude instead of a
+  // flat 2 decimals, so a sub-cent altcoin (e.g. 0.00001234) still shows meaningful digits instead
+  // of rounding to "0.00" (same underlying problem fmtBalance above solves for account balances).
+  // >= 1 stays at 2 decimals (BTC-/ETH-scale prices); below 1, precision grows with how many
+  // leading zeros follow the decimal point, capped at 8, so ~4 significant digits stay visible.
+  function fmtPrice(n) {
+    if (n === null || n === undefined || Number.isNaN(n)) return '-';
+    const num = Number(n);
+    const abs = Math.abs(num);
+    let digits = 2;
+    if (abs > 0 && abs < 1) {
+      const leadingZeros = Math.max(0, -Math.floor(Math.log10(abs)) - 1);
+      digits = Math.min(8, leadingZeros + 4);
+    }
+    return fmt(num, digits);
+  }
+
+  // ---------- CoinMarketCap-style market list helpers (Signals Setting tables) ----------
+
+  // Deterministic string -> hue, purely cosmetic: gives each symbol's avatar circle a stable,
+  // distinct-looking color across reloads without needing real per-asset logo assets (which this
+  // app has no source for — it only ever gets a bare symbol string like "BTC/USDT" from ccxt).
+  function hashHue(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i += 1) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+    return hash % 360;
+  }
+
+  function symbolAvatar(symbol) {
+    const base = String(symbol || '').split('/')[0] || '?';
+    const avatar = el('span', { class: 'cmc-symbol-avatar' }, base.slice(0, 2).toUpperCase());
+    avatar.style.background = `hsl(${hashHue(base)}, 55%, 42%)`;
+    return avatar;
+  }
+
+  // CoinMarketCap-style colored pill for 24h % change — green/up, red/down, muted/flat.
+  function changeBadge(percent) {
+    if (percent === null || percent === undefined || Number.isNaN(percent)) {
+      return el('span', { class: 'cmc-change cmc-change--flat' }, '-');
+    }
+    const direction = percent > 0 ? 'up' : percent < 0 ? 'down' : 'flat';
+    const arrow = direction === 'up' ? '▲' : direction === 'down' ? '▼' : '';
+    return el('span', { class: `cmc-change cmc-change--${direction}` }, `${arrow} ${fmt(Math.abs(percent), 2)}%`.trim());
+  }
+
   // Every stored timestamp in this app is a UTC ISO-8601 string (e.g. from new Date().toISOString()
   // at write time) — this renders it in the browser's own local timezone (whatever the device is
   // set to) for every history table, rather than showing the raw UTC string. No `timeZone` option
@@ -229,9 +274,33 @@
       clear(body);
       emptyEl.hidden = watchlistCache.length > 0;
 
-      watchlistCache.forEach((asset) => {
+      watchlistCache.forEach((asset, index) => {
         const row = el('tr');
-        row.append(el('td', {}, asset.symbol), el('td', {}, asset.exchange), el('td', {}, asset.asset_type));
+        row.appendChild(el('td', { class: 'cmc-rank' }, String(index + 1)));
+
+        const symbolCell = el('td');
+        const symbolWrap = el('div', { class: 'cmc-symbol-cell' });
+        symbolWrap.appendChild(symbolAvatar(asset.symbol));
+        symbolWrap.appendChild(el('span', { class: 'cmc-symbol-name' }, asset.symbol));
+        symbolCell.appendChild(symbolWrap);
+        row.appendChild(symbolCell);
+
+        // Live price/24h % — fetched below, per row, after the row is in the DOM (fire-and-forget,
+        // same pattern as loadMarketData's header card); starts as a loading placeholder rather
+        // than blocking the whole table on every asset's network round-trip.
+        const priceCell = el('td', { class: 'cmc-price' }, '…');
+        const changeCell = el('td');
+        row.appendChild(priceCell);
+        row.appendChild(changeCell);
+        Api.getMarketData(asset.symbol, asset.exchange).then((snapshot) => {
+          priceCell.textContent = fmtPrice(snapshot.price);
+          clear(changeCell);
+          changeCell.appendChild(changeBadge(snapshot.changePercent24h));
+        }).catch(() => {
+          priceCell.textContent = '-';
+        });
+
+        row.append(el('td', {}, asset.exchange), el('td', {}, asset.asset_type));
 
         const timeframeSelect = el('select');
         TIMEFRAME_OPTIONS.forEach((tf) => {
@@ -337,7 +406,7 @@
 
       loadLastWatchlistSignals();
     } catch (err) {
-      toast(`Failed to load watchlist: ${err.message}`, 'error');
+      toast(`Failed to load Signals Setting: ${err.message}`, 'error');
     }
   }
 
@@ -352,7 +421,7 @@
     }
     try {
       await Api.addAsset({ symbol, exchange, assetType, defaultTimeframe });
-      toast(`${symbol} added to watchlist.`, 'success');
+      toast(`${symbol} added to Signals Setting.`, 'success');
       await refreshSpotWatchlist();
     } catch (err) {
       toast(`Failed to add asset: ${err.message}`, 'error');
@@ -364,7 +433,7 @@
   // path to Real at all).
   async function enableAutoTradeForAll() {
     if (watchlistCache.length === 0) {
-      toast('Your Watchlist is empty — add an asset first.', 'error');
+      toast('Your Signals Setting is empty — add an asset first.', 'error');
       return;
     }
     const btn = document.getElementById('enable-all-autotrade-btn');
@@ -385,7 +454,7 @@
     btn.textContent = '🤖 Enable Auto-Trade for All';
     await refreshSpotWatchlist();
     if (failures.length === 0) {
-      toast(`AI Auto-Trade enabled for all ${succeeded} Watchlist asset(s) (Demo only).`, 'success');
+      toast(`AI Auto-Trade enabled for all ${succeeded} Signals Setting asset(s) (Demo only).`, 'success');
     } else {
       toast(`Enabled ${succeeded}/${watchlistCache.length}. Failed: ${failures.join('; ')}`, 'error');
     }
@@ -401,7 +470,7 @@
       }
       lastPrice = snapshot.price;
       showContent(card);
-      setField(card, 'price', fmt(snapshot.price));
+      setField(card, 'price', fmtPrice(snapshot.price));
       const change = snapshot.changePercent24h;
       const changeNode = card.querySelector('[data-field="change"]');
       changeNode.textContent = change === null ? '-' : `${fmt(change)}%`;
@@ -416,13 +485,6 @@
 
   let fallbackPriceChart = null;
 
-  // Built-in (this app's own real candle data) is the default for every exchange, not just
-  // Nobitex — TradingView's widget silently fails for any user whose network/country can't reach
-  // TradingView's own servers (their CDN returns a 403 *inside* the widget's cross-origin iframe,
-  // which this page has no way to detect via JS), so defaulting to it risks a chart that looks
-  // broken with zero warning. TradingView is offered as an explicit opt-in instead — see the
-  // "Try TradingView Chart" button — for the many users whose network *can* reach it and want its
-  // richer tools (drawing, indicators, replay).
   async function loadBuiltinChart() {
     document.getElementById('chart-tv-attribution').hidden = true;
     document.getElementById('chart-fallback-notice').hidden = false;
@@ -466,8 +528,19 @@
     });
   }
 
+  // TradingView is the default chart wherever it actually has data for the asset's exchange
+  // (hasTradingViewMapping) — it's not offered at all for exchanges TradingView doesn't index
+  // (e.g. Nobitex), where the built-in chart (this app's own real candle data) is used instead.
+  // Trade-off worth knowing: TradingView's widget is an opaque cross-origin iframe with no error
+  // callback, so a user whose network/country blocks TradingView's own servers gets a blank/failed
+  // chart with no JS-visible warning — the "Use Built-in Chart" button is the manual escape hatch
+  // for that case (see loadTradingViewChart/loadBuiltinChart).
   async function loadChart() {
-    await loadBuiltinChart();
+    if (Charts.hasTradingViewMapping(currentAsset.exchange, currentAsset.assetType)) {
+      loadTradingViewChart();
+    } else {
+      await loadBuiltinChart();
+    }
   }
 
   const INDICATOR_LABELS = {
@@ -481,11 +554,11 @@
     const v = indicator.value;
     if (typeof v === 'number') return fmt(v);
     if (key === 'macd') return `MACD ${fmt(v.macd)} / Signal ${fmt(v.signal)} / Hist ${fmt(v.histogram)}`;
-    if (key === 'bollingerBands') return `Upper ${fmt(v.upper)} / Mid ${fmt(v.middle)} / Lower ${fmt(v.lower)}`;
+    if (key === 'bollingerBands') return `Upper ${fmtPrice(v.upper)} / Mid ${fmtPrice(v.middle)} / Lower ${fmtPrice(v.lower)}`;
     if (key === 'stochastic') return `%K ${fmt(v.k)} / %D ${fmt(v.d)}`;
     if (key === 'adx') return `ADX ${fmt(v.adx)} / +DI ${fmt(v.pdi)} / -DI ${fmt(v.mdi)}`;
-    if (key === 'ichimoku') return `Conversion ${fmt(v.conversion)} / Base ${fmt(v.base)} / Cloud ${fmt(v.cloudBottom)}–${fmt(v.cloudTop)}`;
-    if (key === 'supportResistance') return `Support ${fmt(v.nearestSupport)} / Resistance ${fmt(v.nearestResistance)}`;
+    if (key === 'ichimoku') return `Conversion ${fmtPrice(v.conversion)} / Base ${fmtPrice(v.base)} / Cloud ${fmtPrice(v.cloudBottom)}–${fmtPrice(v.cloudTop)}`;
+    if (key === 'supportResistance') return `Support ${fmtPrice(v.nearestSupport)} / Resistance ${fmtPrice(v.nearestResistance)}`;
     if (key === 'volumeAnalysis') return `Vol ${fmt(v.currentVolume)} (${fmt(v.relativeVolume)}x avg)`;
     return JSON.stringify(v);
   }
@@ -553,7 +626,7 @@
     container.appendChild(signalBadge(signal.status));
     container.appendChild(el('p', {}, `Strategy: ${signal.strategyName || 'Balanced'} | Final score: ${fmt(signal.finalScore, 3)} | Confidence: ${fmt(signal.confidence, 2)} | Data quality: ${signal.dataQuality}`));
     if (signal.entry !== null) {
-      container.appendChild(el('p', {}, `Entry ${fmt(signal.entry)} / Stop ${fmt(signal.stopLoss)} / Take ${fmt(signal.takeProfit)} / R:R ${fmt(signal.riskRewardRatio, 2)}`));
+      container.appendChild(el('p', {}, `Entry ${fmtPrice(signal.entry)} / Stop ${fmtPrice(signal.stopLoss)} / Take ${fmtPrice(signal.takeProfit)} / R:R ${fmt(signal.riskRewardRatio, 2)}`));
     }
     const reasons = el('ul');
     (signal.reasons || []).forEach((r) => reasons.appendChild(el('li', {}, r)));
@@ -593,9 +666,9 @@
           el('td', {}, s.status),
           el('td', {}, fmt(s.final_score, 3)),
           el('td', {}, fmt(s.confidence, 2)),
-          el('td', {}, fmt(s.entry)),
-          el('td', {}, fmt(s.stop_loss)),
-          el('td', {}, fmt(s.take_profit)),
+          el('td', {}, fmtPrice(s.entry)),
+          el('td', {}, fmtPrice(s.stop_loss)),
+          el('td', {}, fmtPrice(s.take_profit)),
           el('td', {}, fmt(s.risk_reward_ratio, 2))
         );
         body.appendChild(row);
@@ -646,9 +719,9 @@
           el('td', {}, signal.tsUtc ? formatTimestamp(signal.tsUtc) : '-'),
           statusCell,
           el('td', {}, fmt(signal.finalScore, 3)),
-          el('td', {}, fmt(signal.entry)),
-          el('td', {}, fmt(signal.stopLoss)),
-          el('td', {}, fmt(signal.takeProfit)),
+          el('td', {}, fmtPrice(signal.entry)),
+          el('td', {}, fmtPrice(signal.stopLoss)),
+          el('td', {}, fmtPrice(signal.takeProfit)),
           el('td', {}, fmt(signal.riskRewardRatio, 2))
         );
       }
@@ -701,7 +774,7 @@
 
   async function generateSignalsForWatchlist() {
     if (watchlistCache.length === 0) {
-      toast('Your Watchlist is empty — add an asset first.', 'error');
+      toast('Your Signals Setting is empty — add an asset first.', 'error');
       return;
     }
     const btn = document.getElementById('generate-watchlist-signals-btn');
@@ -723,9 +796,9 @@
       renderWatchlistSignalsTable(results); // render incrementally so progress is visible
     }
     btn.disabled = false;
-    btn.textContent = 'Generate for Watchlist';
+    btn.textContent = 'Generate for Signals Setting';
     const succeeded = results.filter((r) => !r.error).length;
-    toast(`Generated ${succeeded}/${results.length} watchlist signals.`, succeeded === results.length ? 'success' : 'error');
+    toast(`Generated ${succeeded}/${results.length} signal(s).`, succeeded === results.length ? 'success' : 'error');
   }
 
   // ---------- real exchange credentials ----------
@@ -834,8 +907,8 @@
       else if (p.unrealizedPnl < 0) unrealizedCell.className = 'text-negative';
       row.append(
         el('td', {}, p.symbol), el('td', {}, p.side), el('td', {}, fmt(p.qty, 6)),
-        el('td', {}, fmt(p.entry_price)), el('td', {}, p.currentPrice != null ? fmt(p.currentPrice) : '-'),
-        unrealizedCell, el('td', {}, fmt(p.stop_loss)), el('td', {}, fmt(p.take_profit))
+        el('td', {}, fmtPrice(p.entry_price)), el('td', {}, p.currentPrice != null ? fmtPrice(p.currentPrice) : '-'),
+        unrealizedCell, el('td', {}, fmtPrice(p.stop_loss)), el('td', {}, fmtPrice(p.take_profit))
       );
       body.appendChild(row);
     });
@@ -851,7 +924,7 @@
       const row = el('tr');
       row.append(
         el('td', {}, formatTimestamp(o.created_at_utc)), el('td', {}, o.symbol || '-'), el('td', {}, orderTypeLabel(o.order_type)), el('td', {}, o.side), el('td', {}, fmt(o.qty, 6)),
-        el('td', {}, fmt(o.price)), el('td', {}, o.status), el('td', {}, o.reject_reason || '')
+        el('td', {}, fmtPrice(o.price)), el('td', {}, o.status), el('td', {}, o.reject_reason || '')
       );
       body.appendChild(row);
     });
@@ -863,9 +936,9 @@
     clear(body);
     orders.forEach((o) => {
       const row = el('tr');
-      const limitOrTrigger = o.order_type === 'stop_market' ? fmt(o.trigger_price)
-        : o.order_type === 'stop_limit' ? `${fmt(o.trigger_price)} → ${fmt(o.limit_price)}`
-        : fmt(o.limit_price);
+      const limitOrTrigger = o.order_type === 'stop_market' ? fmtPrice(o.trigger_price)
+        : o.order_type === 'stop_limit' ? `${fmtPrice(o.trigger_price)} → ${fmtPrice(o.limit_price)}`
+        : fmtPrice(o.limit_price);
       const cancelBtn = el('button', { type: 'button' }, 'Cancel');
       cancelBtn.addEventListener('click', () => cancelPendingOrder(mode, o.id, cancelBtn));
       const actionCell = el('td');

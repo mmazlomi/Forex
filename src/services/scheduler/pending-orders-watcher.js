@@ -16,6 +16,7 @@ const config = require('../../../config/config');
 // race-condition trade-off this module's sibling-cancel step is built around).
 
 let intervalHandle = null;
+let isRunning = false;
 
 /**
  * Whether a pending order's limit/trigger condition is met at `currentPrice`, and the price it
@@ -147,7 +148,16 @@ async function runCycle() {
 function start() {
   if (intervalHandle) return;
   intervalHandle = setInterval(() => {
-    runCycle().catch((err) => logger.error('pending-orders-watcher', `Pending-orders cycle crashed: ${err.message}`));
+    // See auto-trader.js's identical guard: prevents overlapping cycles from piling up when a
+    // cycle takes longer than the poll interval (e.g. a slow exchange).
+    if (isRunning) {
+      logger.warn('pending-orders-watcher', 'Skipped pending-orders cycle: previous cycle is still running');
+      return;
+    }
+    isRunning = true;
+    runCycle()
+      .catch((err) => logger.error('pending-orders-watcher', `Pending-orders cycle crashed: ${err.message}`))
+      .finally(() => { isRunning = false; });
   }, config.pendingOrdersPollIntervalMs);
   if (typeof intervalHandle.unref === 'function') intervalHandle.unref();
   logger.info('pending-orders-watcher', `Pending-orders watcher started (interval ${config.pendingOrdersPollIntervalMs}ms)`);

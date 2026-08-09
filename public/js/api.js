@@ -67,7 +67,7 @@ const Api = (() => {
 
     listStrategies: () => request('GET', 'api/strategies'),
 
-    getMarketData: (symbol, exchange) => request('GET', 'api/market-data', { query: { symbol, exchange } }),
+    getMarketData: (symbol, exchange, market) => request('GET', 'api/market-data', { query: { symbol, exchange, market } }),
     getCandles: (symbol, exchange, timeframe, limit) => request('GET', 'api/candles', { query: { symbol, exchange, timeframe, limit } }),
     getIndicators: (symbol, exchange, timeframe) => request('GET', 'api/indicators', { query: { symbol, exchange, timeframe } }),
     getIndicatorSeries: (symbol, exchange, timeframe) => request('GET', 'api/indicator-series', { query: { symbol, exchange, timeframe } }),

@@ -17,7 +17,13 @@ function requireSymbolExchange(req, res) {
 async function getMarketData(req, res) {
   const params = requireSymbolExchange(req, res);
   if (!params) return;
-  const snapshot = await marketDataService.getSnapshot(params);
+  // `market` defaults to spot for every existing caller — same opt-in shape as
+  // marketDataService's own fetchAndStoreCandles/getCandles, added here so the Signals Setting
+  // tables' futures rows can pull a live price/24h-change too (getSnapshot only ever queries the
+  // spot client, which has no market data for a futures-only symbol like BTC/USDT:USDT).
+  const snapshot = req.query.market === 'futures'
+    ? await marketDataService.getFuturesSnapshot(params)
+    : await marketDataService.getSnapshot(params);
   sendSuccess(res, snapshot);
 }
 

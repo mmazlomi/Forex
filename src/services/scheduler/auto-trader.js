@@ -14,6 +14,7 @@ const config = require('../../../config/config');
 const MODE = 'demo';
 
 let intervalHandle = null;
+let isRunning = false;
 
 // 'auto' strategy_mode only actually takes the combined (majority-vote) path once
 // strategy-selector.js has successfully picked >= 2 strategies — an 'auto'-mode asset with no
@@ -87,7 +88,18 @@ async function runCycle() {
 function start() {
   if (intervalHandle) return;
   intervalHandle = setInterval(() => {
-    runCycle().catch((err) => logger.error('auto-trader', `Auto-trade cycle crashed: ${err.message}`));
+    // Guards against overlapping cycles: without this, a cycle that outlives the poll interval
+    // (e.g. a slow/unreachable exchange forcing every asset through its full retry+timeout
+    // budget) would let the next tick fire on top of it, piling up concurrent ccxt clients and
+    // in-flight requests without bound.
+    if (isRunning) {
+      logger.warn('auto-trader', 'Skipped auto-trade cycle: previous cycle is still running');
+      return;
+    }
+    isRunning = true;
+    runCycle()
+      .catch((err) => logger.error('auto-trader', `Auto-trade cycle crashed: ${err.message}`))
+      .finally(() => { isRunning = false; });
   }, config.autoTradeIntervalMs);
   if (typeof intervalHandle.unref === 'function') intervalHandle.unref();
   logger.info('auto-trader', `AI auto-trader started (interval ${config.autoTradeIntervalMs}ms, Demo mode only)`);

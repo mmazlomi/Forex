@@ -522,6 +522,80 @@ select {
   font-weight: 600;
 }
 
+/* ---------- Signals Setting tables (CoinMarketCap-style market list) ---------- */
+/* Scoped to .cmc-table specifically (not every .data-table) — most tables in this app (order
+   history, backtest leaderboard, etc.) aren't market listings and shouldn't pick this up. */
+
+.cmc-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--color-bg-elevated);
+}
+
+.cmc-table .cmc-rank {
+  color: var(--color-fg-muted);
+  font-variant-numeric: tabular-nums;
+  width: 1.5rem;
+}
+
+.cmc-symbol-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.cmc-symbol-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  flex-shrink: 0;
+}
+
+.cmc-symbol-name {
+  font-weight: 600;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.cmc-price {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cmc-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.cmc-change--up {
+  background: rgba(22, 163, 74, 0.15);
+  color: var(--color-success);
+}
+
+.cmc-change--down {
+  background: rgba(220, 38, 38, 0.15);
+  color: var(--color-danger);
+}
+
+.cmc-change--flat {
+  background: var(--color-bg);
+  color: var(--color-fg-muted);
+}
+
 .raw-output {
   background: var(--color-bg);
   padding: 0.75rem;
