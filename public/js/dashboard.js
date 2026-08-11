@@ -12,6 +12,7 @@
   let equityChart = null;
   let watchlistCache = [];
   let strategiesCache = [];
+  let exchangesCache = [];
   let pendingBacktestScoringConfig = null;
   // Matches the header's #timeframe-input options and the backend's SUPPORTED_TIMEFRAMES
   // (src/services/market-data/market-data-service.js) — kept as a literal list here rather than
@@ -205,6 +206,7 @@
   async function loadExchangeOptions() {
     try {
       const exchanges = await Api.listExchanges();
+      exchangesCache = exchanges;
       const select = document.getElementById('exchange-input');
       clear(select);
       exchanges.forEach((ex) => {
@@ -300,7 +302,36 @@
           priceCell.textContent = '-';
         });
 
-        row.append(el('td', {}, asset.exchange), el('td', {}, asset.asset_type));
+        // Lets the exchange be changed in place instead of removing/re-adding the row — the
+        // asset's `exchange` is part of its identity (UNIQUE(user_id, symbol, exchange), see
+        // assets-repository.js#setExchange), so this issues a PUT rather than a plain field
+        // update. Includes a synthetic option for asset.exchange if it's outside the curated
+        // exchangesCache list (e.g. added directly via the API) so the select still shows the
+        // real current value instead of silently defaulting to the first option.
+        const exchangeSelect = el('select');
+        if (!exchangesCache.some((ex) => ex.id === asset.exchange)) {
+          exchangeSelect.appendChild(el('option', { value: asset.exchange, selected: 'selected' }, asset.exchange));
+        }
+        exchangesCache.forEach((ex) => {
+          const opt = el('option', { value: ex.id }, ex.name);
+          if (ex.id === asset.exchange) opt.setAttribute('selected', 'selected');
+          exchangeSelect.appendChild(opt);
+        });
+        exchangeSelect.title = 'Switch which exchange this asset is priced/traded on, without removing and re-adding it.';
+        exchangeSelect.addEventListener('change', async () => {
+          const newExchange = exchangeSelect.value;
+          try {
+            await Api.setAssetExchange(asset.symbol, asset.exchange, newExchange);
+            toast(`${asset.symbol} moved to ${newExchange}.`, 'success');
+            await refreshSpotWatchlist();
+          } catch (err) {
+            exchangeSelect.value = asset.exchange;
+            toast(`Failed to change exchange: ${err.message}`, 'error');
+          }
+        });
+        const exchangeCell = el('td');
+        exchangeCell.appendChild(exchangeSelect);
+        row.append(exchangeCell, el('td', {}, asset.asset_type));
 
         const timeframeSelect = el('select');
         TIMEFRAME_OPTIONS.forEach((tf) => {
@@ -906,7 +937,7 @@
       if (p.unrealizedPnl > 0) unrealizedCell.className = 'text-positive';
       else if (p.unrealizedPnl < 0) unrealizedCell.className = 'text-negative';
       row.append(
-        el('td', {}, p.symbol), el('td', {}, p.side), el('td', {}, fmt(p.qty, 6)),
+        el('td', {}, p.symbol), el('td', {}, p.exchange || '-'), el('td', {}, p.side), el('td', {}, fmt(p.qty, 6)),
         el('td', {}, fmtPrice(p.entry_price)), el('td', {}, p.currentPrice != null ? fmtPrice(p.currentPrice) : '-'),
         unrealizedCell, el('td', {}, fmtPrice(p.stop_loss)), el('td', {}, fmtPrice(p.take_profit))
       );

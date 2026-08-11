@@ -196,7 +196,7 @@ const Futures = (() => {
         liqCell.title = `Only ${fmt(p.liquidationDistancePercent, 1)}% away from liquidation at the current price.`;
       }
       row.append(
-        el('td', {}, p.symbol), el('td', {}, p.side), el('td', {}, `${p.leverage}x`), el('td', {}, fmt(p.qty, 6)),
+        el('td', {}, p.symbol), el('td', {}, p.exchange || '-'), el('td', {}, p.side), el('td', {}, `${p.leverage}x`), el('td', {}, fmt(p.qty, 6)),
         el('td', {}, fmtPrice(p.entry_price)), el('td', {}, p.currentPrice != null ? fmtPrice(p.currentPrice) : '-'),
         unrealizedCell, liqCell, el('td', {}, fmtPrice(p.stop_loss)), el('td', {}, fmtPrice(p.take_profit))
       );

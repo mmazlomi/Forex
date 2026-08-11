@@ -111,6 +111,44 @@ async function setTimeframe(req, res) {
   sendSuccess(res, asset, `Timeframe set to "${defaultTimeframe}" for ${symbol}.`);
 }
 
+// Moves a watchlist entry to a different exchange without removing/re-adding it — same crypto
+// market validation as addAsset (a symbol valid on one exchange isn't guaranteed valid on
+// another) plus a check that the destination (symbol, newExchange) pair isn't already on the
+// watchlist, since UNIQUE(user_id, symbol, exchange) would otherwise reject the UPDATE.
+async function setExchange(req, res) {
+  const { symbol } = req.params;
+  const { exchange } = req.query;
+  const { newExchange } = req.body || {};
+  if (!exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
+  }
+  if (!newExchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'newExchange is required in the request body.');
+  }
+  if (newExchange === exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'newExchange must differ from the current exchange.');
+  }
+
+  const asset = assetsRepository.getAsset(req.user.id, symbol, exchange);
+  if (!asset) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
+  }
+  if (assetsRepository.getAsset(req.user.id, symbol, newExchange)) {
+    return sendError(res, 'VALIDATION_ERROR', `Asset "${symbol}" on "${newExchange}" is already on your watchlist.`, 409);
+  }
+
+  if (asset.asset_type === 'crypto') {
+    const client = exchangeClientFactory.getPublicExchange(newExchange);
+    await withRetry(() => client.loadMarkets(), { maxRetries: config.maxApiRetries });
+    if (!client.markets[symbol]) {
+      return sendError(res, 'VALIDATION_ERROR', `Symbol "${symbol}" was not found on exchange "${newExchange}".`);
+    }
+  }
+
+  const updated = assetsRepository.setExchange(req.user.id, symbol, exchange, newExchange);
+  sendSuccess(res, updated, `Exchange changed to "${newExchange}" for ${symbol}.`);
+}
+
 const STRATEGY_MODES = ['manual', 'auto'];
 
 // 'auto' opts this asset into strategy-selector.js's periodic winrate-based backtesting — see
@@ -133,4 +171,4 @@ async function setStrategyMode(req, res) {
   sendSuccess(res, asset, `Strategy mode set to "${mode}" for ${symbol}.`);
 }
 
-module.exports = { listAssets, addAsset, removeAsset, setAutoTrade, setStrategy, setTimeframe, setStrategyMode };
+module.exports = { listAssets, addAsset, removeAsset, setAutoTrade, setStrategy, setTimeframe, setExchange, setStrategyMode };

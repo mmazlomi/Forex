@@ -12,6 +12,7 @@ router.delete('/:symbol', asyncHandler(controller.removeAsset));
 router.put('/:symbol/auto-trade', asyncHandler(controller.setAutoTrade));
 router.put('/:symbol/strategy', asyncHandler(controller.setStrategy));
 router.put('/:symbol/timeframe', asyncHandler(controller.setTimeframe));
+router.put('/:symbol/exchange', asyncHandler(controller.setExchange));
 router.put('/:symbol/strategy-mode', asyncHandler(controller.setStrategyMode));
 
 module.exports = router;

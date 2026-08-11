@@ -44,3 +44,55 @@ test('PUT /api/assets/:symbol/timeframe updates default_timeframe and validates 
   assert.equal(notFound.status, 404);
   assert.equal((await json(notFound)).errorCode, 'ASSET_NOT_FOUND');
 });
+
+test('PUT /api/assets/:symbol/exchange moves a watchlist entry to a different exchange', async (t) => {
+  const { close, authedFetch } = await startAuthedTestServer();
+  t.after(close);
+
+  await authedFetch('/api/assets', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol: 'BTC/USDT', exchange: 'kucoin', assetType: 'crypto', defaultTimeframe: '1h' }),
+  });
+
+  const res = await authedFetch('/api/assets/BTC%2FUSDT/exchange?exchange=kucoin', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newExchange: 'mexc' }),
+  });
+  const body = await json(res);
+  assert.equal(res.status, 200);
+  assert.equal(body.data.exchange, 'mexc');
+
+  const list = await json(await authedFetch('/api/assets'));
+  assert.equal(list.data.length, 1);
+  assert.equal(list.data[0].exchange, 'mexc');
+
+  const sameExchange = await authedFetch('/api/assets/BTC%2FUSDT/exchange?exchange=mexc', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newExchange: 'mexc' }),
+  });
+  assert.equal(sameExchange.status, 400);
+  assert.equal((await json(sameExchange)).errorCode, 'VALIDATION_ERROR');
+
+  const missingNewExchange = await authedFetch('/api/assets/BTC%2FUSDT/exchange?exchange=mexc', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+  });
+  assert.equal(missingNewExchange.status, 400);
+
+  const notFound = await authedFetch('/api/assets/ETH%2FUSDT/exchange?exchange=mexc', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newExchange: 'kucoin' }),
+  });
+  assert.equal(notFound.status, 404);
+  assert.equal((await json(notFound)).errorCode, 'ASSET_NOT_FOUND');
+
+  await authedFetch('/api/assets', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol: 'ETH/USDT', exchange: 'kucoin', assetType: 'crypto', defaultTimeframe: '1h' }),
+  });
+  await authedFetch('/api/assets', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol: 'ETH/USDT', exchange: 'mexc', assetType: 'crypto', defaultTimeframe: '1h' }),
+  });
+  const conflict = await authedFetch('/api/assets/ETH%2FUSDT/exchange?exchange=kucoin', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newExchange: 'mexc' }),
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal((await json(conflict)).errorCode, 'VALIDATION_ERROR');
+});

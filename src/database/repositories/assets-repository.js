@@ -73,6 +73,20 @@ function setTimeframe(userId, symbol, exchange, defaultTimeframe) {
   return getAsset(userId, symbol, exchange);
 }
 
+// Moves this watchlist entry to a different exchange in place, instead of the user having to
+// remove and re-add it (see addAsset's UNIQUE(user_id, symbol, exchange) — this is a real key
+// change, not a plain field update like setStrategy/setTimeframe above). Caller is responsible
+// for checking the destination (symbol, newExchange) isn't already on the watchlist and that the
+// symbol actually exists there, since this only touches the DB row.
+function setExchange(userId, symbol, oldExchange, newExchange) {
+  const db = getDb();
+  const result = db
+    .prepare('UPDATE assets SET exchange = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
+    .run(newExchange, userId, symbol, oldExchange);
+  if (result.changes === 0) return null;
+  return getAsset(userId, symbol, newExchange);
+}
+
 // One-time claim for pre-account watchlist rows (user_id IS NULL, left behind by the schema
 // migration — see schema.js). Called once, only for the very first account ever created, so the
 // original single-user watchlist isn't silently orphaned/invisible once accounts exist.
@@ -120,6 +134,6 @@ function listAutoStrategyModeAssets() {
 
 module.exports = {
   listAssets, getAsset, addAsset, removeAsset, setAutoTrade, listAutoTradeEnabled, setStrategy, setTimeframe,
-  setStrategyMode, setSelectedStrategies, listAutoStrategyModeAssets,
+  setExchange, setStrategyMode, setSelectedStrategies, listAutoStrategyModeAssets,
   claimOrphanedAssets,
 };

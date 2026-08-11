@@ -63,6 +63,7 @@ const Api = (() => {
     listSymbolsForExchange: (exchange) => request('GET', 'api/exchanges/symbols', { query: { exchange } }),
     setAssetStrategy: (symbol, exchange, strategyId) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/strategy`, { query: { exchange }, body: { strategyId } }),
     setAssetTimeframe: (symbol, exchange, defaultTimeframe) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/timeframe`, { query: { exchange }, body: { defaultTimeframe } }),
+    setAssetExchange: (symbol, exchange, newExchange) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/exchange`, { query: { exchange }, body: { newExchange } }),
     setAssetStrategyMode: (symbol, exchange, mode) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/strategy-mode`, { query: { exchange }, body: { mode } }),
 
     listStrategies: () => request('GET', 'api/strategies'),
