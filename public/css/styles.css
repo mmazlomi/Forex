@@ -261,7 +261,12 @@ body {
 
 .app-main {
   padding: 1rem 1.5rem 3rem;
-  max-width: 1280px;
+  /* Was a flat 1280px, which left a 1920px-wide monitor with unused margins on both sides while
+     still forcing wide tables (e.g. Signals Setting's 14-column asset tables) into their
+     .table-scroll horizontal scrollbar. 1800px gives those tables enough room to lay out without
+     scrolling on a 1080p+ display; still caps out and centers on genuinely wide/ultrawide
+     monitors instead of stretching indefinitely. */
+  max-width: 1800px;
   margin: 0 auto;
 }
 
@@ -606,13 +611,6 @@ select {
   overflow-y: auto;
 }
 
-.signal-current {
-  margin: 0.75rem 0;
-  padding: 0.75rem;
-  border-radius: 8px;
-  background: var(--color-bg);
-}
-
 .signal-badge {
   display: inline-block;
   padding: 0.15rem 0.6rem;
@@ -628,6 +626,18 @@ select {
 
 .text-positive { color: var(--color-success); }
 .text-negative { color: var(--color-danger); }
+
+/* Small "Raw" toggle button in the Open Positions tables, opening a full-JSON detail row (see
+   .position-raw-row) for a position — deliberately much smaller than the default button so it
+   doesn't visually compete with the row's actual data in a dense table. */
+.raw-toggle-btn {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+}
+
+.position-raw-row td {
+  padding: 0.5rem;
+}
 
 /* ---------- Real trading ---------- */
 
@@ -697,6 +707,17 @@ select {
 .order-form input,
 .order-form select {
   width: 100%;
+}
+
+/* Leverage is at most 3 digits (e.g. "125") — stretching it to match Stop-loss/Take-profit/Amount's
+   full-width sizing wastes space for no benefit. flex-basis caps how much of the wrapped row it
+   claims; the input's own width is capped separately since it still inherits width:100% above. */
+.order-form .futures-action-field--leverage {
+  flex: 0 0 auto;
+}
+
+.order-form .futures-action-field--leverage input {
+  width: 5rem;
 }
 
 /* ---------- Confirmation dialog ---------- */

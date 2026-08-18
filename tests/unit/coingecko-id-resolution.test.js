@@ -5,6 +5,7 @@
 // tickers — every crypto fundamental field silently showed "unavailable" as a result.
 
 process.env.DATABASE_PATH = ':memory:';
+process.env.COINGECKO_MIN_INTERVAL_MS = '0'; // no need to throttle real network calls in tests
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -12,8 +13,8 @@ const { resetForTests } = require('../../src/database/connection');
 const { resolveCoinId } = require('../../src/services/fundamental-analysis/providers/coingecko');
 const fundamentalAnalysis = require('../../src/services/fundamental-analysis');
 
-function jsonResponse(body, ok = true, status = 200) {
-  return { ok, status, json: async () => body };
+function jsonResponse(body, ok = true, status = 200, headers = {}) {
+  return { ok, status, headers: { get: (name) => headers[name.toLowerCase()] ?? null }, json: async () => body };
 }
 
 test.beforeEach(() => {
@@ -83,4 +84,44 @@ test('getFundamentals returns "unavailable" (not a crash, not fabricated) when t
   const result = await fundamentalAnalysis.getFundamentals({ symbol: 'NOTAREAL/USDT', assetType: 'crypto' });
   assert.equal(result.fields.marketCap.value, 'unavailable');
   assert.match(result.fields.marketCap.unavailableReason, /could_not_resolve_coingecko_id/);
+});
+
+// Regression test for a real incident: NOT/USDT (and other symbols) came back NO_DATA because a
+// full watchlist scan fired one CoinGecko request per symbol back-to-back and got 429'd —
+// resolveCoinId/fetchCryptoFundamentals previously never retried a 429 at all.
+test('resolveCoinId retries a 429, honoring its Retry-After header, and succeeds on the next attempt', async (t) => {
+  let callCount = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    callCount += 1;
+    if (callCount === 1) return jsonResponse({}, false, 429, { 'retry-after': '0' });
+    return jsonResponse({ coins: [{ id: 'notcoin', symbol: 'NOT', market_cap_rank: 508 }] });
+  });
+
+  const id = await resolveCoinId('NOT');
+  assert.equal(id, 'notcoin');
+  assert.equal(callCount, 2);
+});
+
+test('resolveCoinId does not retry a non-429 4xx (retrying a bad request/not-found can never succeed)', async (t) => {
+  let callCount = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    callCount += 1;
+    return jsonResponse({}, false, 404);
+  });
+
+  const id = await resolveCoinId('WHATEVER');
+  assert.equal(id, null);
+  assert.equal(callCount, 1);
+});
+
+test('resolveCoinId gives up and returns null after exhausting retries on repeated 429s', async (t) => {
+  let callCount = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    callCount += 1;
+    return jsonResponse({}, false, 429, { 'retry-after': '0' });
+  });
+
+  const id = await resolveCoinId('WHATEVER');
+  assert.equal(id, null);
+  assert.equal(callCount, 4); // 1 initial attempt + config.maxApiRetries (default 3) retries
 });

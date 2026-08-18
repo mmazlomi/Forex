@@ -47,12 +47,39 @@ function setAutoTrade(mode, userId, symbol, exchange, enabled) {
   return getAsset(mode, userId, symbol, exchange);
 }
 
+// Mirrors assets-repository.js's setExchange() for the futures tables — moves a watchlist entry
+// to a different exchange without removing/re-adding it. Caller (futures-controller.js) is
+// responsible for verifying the destination exchange actually supports futures and that the
+// symbol exists there before calling this.
+function setExchange(mode, userId, symbol, oldExchange, newExchange) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  const result = db
+    .prepare(`UPDATE ${table} SET exchange = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
+    .run(newExchange, userId, symbol, oldExchange);
+  if (result.changes === 0) return null;
+  return getAsset(mode, userId, symbol, newExchange);
+}
+
 function setLeverage(mode, userId, symbol, exchange, leverage) {
   const db = getDb();
   const table = futuresAssetsTable(mode);
   const result = db
     .prepare(`UPDATE ${table} SET leverage = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
     .run(leverage, userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(mode, userId, symbol, exchange);
+}
+
+// Mirrors assets-repository.js's setTrailingPercent() for the futures tables — the per-asset
+// default trailing-stop distance (percent of price) a position opened from this asset inherits
+// unless the order itself overrides it. Null (default) means trailing is off.
+function setTrailingPercent(mode, userId, symbol, exchange, trailingPercent) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  const result = db
+    .prepare(`UPDATE ${table} SET trailing_percent = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
+    .run(trailingPercent, userId, symbol, exchange);
   if (result.changes === 0) return null;
   return getAsset(mode, userId, symbol, exchange);
 }
@@ -119,7 +146,7 @@ function listAutoStrategyModeAssets(mode) {
 }
 
 module.exports = {
-  listAssets, getAsset, addAsset, removeAsset, setAutoTrade, setLeverage,
+  listAssets, getAsset, addAsset, removeAsset, setAutoTrade, setLeverage, setExchange,
   listAutoTradeEnabled, setStrategy, setTimeframe,
-  setStrategyMode, setSelectedStrategies, listAutoStrategyModeAssets,
+  setStrategyMode, setSelectedStrategies, listAutoStrategyModeAssets, setTrailingPercent,
 };

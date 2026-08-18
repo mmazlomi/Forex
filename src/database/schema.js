@@ -42,6 +42,25 @@ CREATE TABLE IF NOT EXISTS assets (
   strategy_mode TEXT NOT NULL DEFAULT 'manual',
   selected_strategy_ids_json TEXT,
   strategy_selection_updated_at_utc TEXT,
+  real_auto_trade_enabled INTEGER NOT NULL DEFAULT 0,
+  trailing_percent REAL,
+  UNIQUE(user_id, symbol, exchange)
+);
+
+-- The broad "just tracking, not trading yet" list shown on the WatchList tab — deliberately
+-- separate from the assets table (which IS the Spot Signals Setting / auto-trade table). Adding a
+-- symbol here only records that you're watching it (decorated with live price/24h% client-side,
+-- same feed as everywhere else); it has no strategy/timeframe/auto-trade fields of its own. "Add
+-- to Signals Setting" (watchlist-controller.js#promoteToSignalsSetting) is the one-click promotion
+-- from this lightweight list into the actual trading-configured assets +
+-- demo_futures_assets/real_futures_assets tables.
+CREATE TABLE IF NOT EXISTS watchlist_items (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  symbol TEXT NOT NULL,
+  exchange TEXT NOT NULL,
+  asset_type TEXT NOT NULL CHECK (asset_type IN ('crypto','stock')),
+  added_at_utc TEXT NOT NULL,
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -173,7 +192,15 @@ CREATE TABLE IF NOT EXISTS demo_positions (
   status TEXT NOT NULL,
   exit_price REAL,
   closed_at_utc TEXT,
-  realized_pnl REAL
+  realized_pnl REAL,
+  signal_id TEXT REFERENCES signals(id),
+  strategy_id TEXT,
+  combined_strategy_ids_json TEXT,
+  combined_votes_json TEXT,
+  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
+  timeframe TEXT,
+  trailing_percent REAL,
+  trailing_high_water_mark REAL
 );
 
 CREATE TABLE IF NOT EXISTS demo_orders (
@@ -221,7 +248,15 @@ CREATE TABLE IF NOT EXISTS real_positions (
   status TEXT NOT NULL,
   exit_price REAL,
   closed_at_utc TEXT,
-  realized_pnl REAL
+  realized_pnl REAL,
+  signal_id TEXT REFERENCES signals(id),
+  strategy_id TEXT,
+  combined_strategy_ids_json TEXT,
+  combined_votes_json TEXT,
+  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
+  timeframe TEXT,
+  trailing_percent REAL,
+  trailing_high_water_mark REAL
 );
 
 CREATE TABLE IF NOT EXISTS real_orders (
@@ -286,7 +321,15 @@ CREATE TABLE IF NOT EXISTS demo_futures_positions (
   status TEXT NOT NULL,
   exit_price REAL,
   closed_at_utc TEXT,
-  realized_pnl REAL
+  realized_pnl REAL,
+  signal_id TEXT REFERENCES signals(id),
+  strategy_id TEXT,
+  combined_strategy_ids_json TEXT,
+  combined_votes_json TEXT,
+  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
+  timeframe TEXT,
+  trailing_percent REAL,
+  trailing_high_water_mark REAL
 );
 
 CREATE TABLE IF NOT EXISTS demo_futures_orders (
@@ -334,7 +377,15 @@ CREATE TABLE IF NOT EXISTS real_futures_positions (
   status TEXT NOT NULL,
   exit_price REAL,
   closed_at_utc TEXT,
-  realized_pnl REAL
+  realized_pnl REAL,
+  signal_id TEXT REFERENCES signals(id),
+  strategy_id TEXT,
+  combined_strategy_ids_json TEXT,
+  combined_votes_json TEXT,
+  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
+  timeframe TEXT,
+  trailing_percent REAL,
+  trailing_high_water_mark REAL
 );
 
 CREATE TABLE IF NOT EXISTS real_futures_orders (
@@ -381,6 +432,7 @@ CREATE TABLE IF NOT EXISTS demo_futures_assets (
   strategy_mode TEXT NOT NULL DEFAULT 'manual',
   selected_strategy_ids_json TEXT,
   strategy_selection_updated_at_utc TEXT,
+  trailing_percent REAL,
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -397,6 +449,7 @@ CREATE TABLE IF NOT EXISTS real_futures_assets (
   strategy_mode TEXT NOT NULL DEFAULT 'manual',
   selected_strategy_ids_json TEXT,
   strategy_selection_updated_at_utc TEXT,
+  trailing_percent REAL,
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -523,6 +576,22 @@ function migrateAddStrategySelectionColumns(db, table) {
   }
 }
 
+// One-time migration for databases created before spot supported a separate REAL auto-trade
+// opt-in: `assets` (the single shared spot watchlist — unlike futures, spot never split into
+// demo_assets/real_assets tables) gains a second flag alongside the existing auto_trade_enabled
+// (which the generic Demo-only auto-trader.js has always read). real_auto_trade_enabled is its
+// own explicit, per-asset opt-in — deliberately NOT "auto_trade_enabled + real credentials
+// configured = real trading happens automatically" — matching the same explicit-opt-in
+// granularity futures' demo_futures_assets/real_futures_assets split gives, without requiring the
+// same table split for spot. Currently only read by reversal-spot-auto-trader.js (Liquidity Sweep
+// Reversal); the existing generic Demo-only auto-trader.js never reads it and stays Demo-only.
+function migrateAddRealAutoTradeColumn(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((c) => c.name === 'real_auto_trade_enabled')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN real_auto_trade_enabled INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+
 // Companion to migrateAddStrategySelectionColumns above: signals persisted by the new combined
 // (majority-vote) signal path record which strategies contributed and how each voted, for full
 // transparency beyond the single strategy_id column (which still gets set to a synthetic joined
@@ -556,6 +625,54 @@ function migrateOrdersOrderType(db) {
     if (!names.has('oco_group_id')) db.exec(`ALTER TABLE ${table} ADD COLUMN oco_group_id TEXT`);
     if (!names.has('cancelled_at_utc')) db.exec(`ALTER TABLE ${table} ADD COLUMN cancelled_at_utc TEXT`);
     if (!names.has('exchange')) db.exec(`ALTER TABLE ${table} ADD COLUMN exchange TEXT`);
+  }
+}
+
+// One-time migration for databases created before positions recorded which signal/strategy (if
+// any) opened them: demo_positions/real_positions/demo_futures_positions/real_futures_positions
+// each gain signal_id (FK to signals, nullable — manual orders placed without "Trade from Signal"
+// have none), strategy_id (copied from the triggering signal at open time — a single id, or a
+// joined "a+b" string for combined/auto-mode signals, matching signals.strategy_id's own
+// convention), combined_strategy_ids_json/combined_votes_json (full per-strategy transparency,
+// also copied straight from the signal), and source ('manual'/'auto', mirroring the futures orders
+// tables' existing column — nullable backfill not needed since DEFAULT 'manual' is correct for
+// every pre-existing row, which all predate auto-trading-attributed positions anyway).
+function migrateAddPositionStrategyColumns(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  const names = new Set(columns.map((c) => c.name));
+  if (!names.has('signal_id')) db.exec(`ALTER TABLE ${table} ADD COLUMN signal_id TEXT REFERENCES signals(id)`);
+  if (!names.has('strategy_id')) db.exec(`ALTER TABLE ${table} ADD COLUMN strategy_id TEXT`);
+  if (!names.has('combined_strategy_ids_json')) db.exec(`ALTER TABLE ${table} ADD COLUMN combined_strategy_ids_json TEXT`);
+  if (!names.has('combined_votes_json')) db.exec(`ALTER TABLE ${table} ADD COLUMN combined_votes_json TEXT`);
+  if (!names.has('source')) db.exec(`ALTER TABLE ${table} ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'`);
+  // Which timeframe the signal that opened this position was generated on (e.g. '1h'), or — for
+  // Liquidity Sweep Reversal, which has no single timeframe (it's HTF/signal/entry, three at
+  // once) — a composite "htf/signal/entry" string like "4h/15m/5m" set explicitly by its
+  // schedulers. Null for a position opened without ever going through a signal/strategy at all.
+  if (!names.has('timeframe')) db.exec(`ALTER TABLE ${table} ADD COLUMN timeframe TEXT`);
+}
+
+// One-time migration for databases created before trailing stops existed: demo_positions/
+// real_positions/demo_futures_positions/real_futures_positions each gain trailing_percent (null =
+// trailing not enabled for this position, matching every other opt-in flag's "absence = off"
+// convention here) and trailing_high_water_mark (the best price seen since entry — highest for a
+// long/spot position, lowest for a short — that position-risk-watcher.js ratchets stop_loss
+// against each cycle; seeded to entry_price when trailing is turned on, null otherwise).
+function migrateAddTrailingStopColumns(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  const names = new Set(columns.map((c) => c.name));
+  if (!names.has('trailing_percent')) db.exec(`ALTER TABLE ${table} ADD COLUMN trailing_percent REAL`);
+  if (!names.has('trailing_high_water_mark')) db.exec(`ALTER TABLE ${table} ADD COLUMN trailing_high_water_mark REAL`);
+}
+
+// Companion to migrateAddTrailingStopColumns above: the per-asset trailing_percent DEFAULT a
+// manually- or auto-trader-opened position inherits from its watchlist row (assets/
+// demo_futures_assets/real_futures_assets) if the order itself doesn't explicitly override it —
+// same "one flag, per-asset, opt-in" shape as auto_trade_enabled/strategy_id on these same tables.
+function migrateAddAssetTrailingColumn(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((c) => c.name === 'trailing_percent')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN trailing_percent REAL`);
   }
 }
 
@@ -802,6 +919,15 @@ function applySchema(db) {
     migrateAddStrategySelectionColumns(db, table);
   }
   migrateAddCombinedSignalColumns(db);
+  migrateAddRealAutoTradeColumn(db, 'assets');
+
+  for (const table of ['demo_positions', 'real_positions', 'demo_futures_positions', 'real_futures_positions']) {
+    migrateAddPositionStrategyColumns(db, table);
+    migrateAddTrailingStopColumns(db, table);
+  }
+  for (const table of ['assets', 'demo_futures_assets', 'real_futures_assets']) {
+    migrateAddAssetTrailingColumn(db, table);
+  }
 }
 
 module.exports = { SCHEMA_SQL, applySchema };

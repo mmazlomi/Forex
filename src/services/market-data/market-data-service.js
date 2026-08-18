@@ -115,7 +115,12 @@ async function getFuturesSnapshot({ symbol, exchange }) {
       return { symbol, exchange, status: 'invalid', error: `Symbol "${symbol}" not found on "${exchange}"` };
     }
 
-    const ticker = await withRetry(() => client.fetchTicker(symbol), { maxRetries: config.maxApiRetries });
+    // KuCoin's plain futures ticker endpoint (ccxt's default, uta: false) is a bare real-time
+    // best-bid/ask/last feed with no 24h stats at all — percentage/baseVolume/open/high/low come
+    // back undefined every time, regardless of symbol. `uta: true` routes through KuCoin's Unified
+    // Trading Account ticker endpoint instead, which includes them (verified against KuCoin's raw
+    // response — priceChangePercent/baseVolume are populated there but absent from the plain one).
+    const ticker = await withRetry(() => client.fetchTicker(symbol, { uta: true }), { maxRetries: config.maxApiRetries });
     const fetchedAtMs = Date.now();
     const tickerTimestampMs = ticker.timestamp || fetchedAtMs;
 

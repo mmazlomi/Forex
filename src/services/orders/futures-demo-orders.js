@@ -39,11 +39,11 @@ function toRiskSettingsShape(row) {
   };
 }
 
-function persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeProfit, price, reasonCode, message, idempotencyKey, signalId, source }) {
+function persistRejected({ id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, price, reasonCode, message, idempotencyKey, signalId, source }) {
   return futuresOrdersRepository.insertOrder(MODE, userId, {
     id,
     symbol,
-    exchange: 'kucoin',
+    exchange: exchange || 'kucoin',
     action,
     leverage: leverage ?? 1,
     qty: 0,
@@ -67,12 +67,12 @@ function persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeP
  *
  * Market orders only, full-quantity close only (no partial) — see docs/architecture.md Phase 2.
  */
-async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, source = 'manual' }) {
+async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, source = 'manual', strategyId, timeframe, trailingPercent }) {
   const id = uuidv4();
   action = String(action || '').toLowerCase();
 
   if (!['open_long', 'open_short', 'close'].includes(action)) {
-    return persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeProfit, reasonCode: 'INVALID_ACTION', message: `Unknown action "${action}".`, idempotencyKey, signalId, source });
+    return persistRejected({ id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, reasonCode: 'INVALID_ACTION', message: `Unknown action "${action}".`, idempotencyKey, signalId, source });
   }
 
   if (idempotencyKey) {
@@ -82,46 +82,46 @@ async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', acti
 
   const snapshot = await marketDataService.getFuturesSnapshot({ symbol, exchange });
   if (snapshot.status !== 'ok' || typeof snapshot.price !== 'number') {
-    return persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeProfit, reasonCode: 'INVALID_PRICE', message: snapshot.error || 'Market price unavailable', idempotencyKey, signalId, source });
+    return persistRejected({ id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, reasonCode: 'INVALID_PRICE', message: snapshot.error || 'Market price unavailable', idempotencyKey, signalId, source });
   }
   const price = snapshot.price;
 
   if (emergencyStopRepository.isActive(MODE, userId)) {
-    return persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeProfit, price, reasonCode: 'EMERGENCY_STOP_ACTIVE', message: 'Demo futures trading is halted by an active emergency stop.', idempotencyKey, signalId, source });
+    return persistRejected({ id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, price, reasonCode: 'EMERGENCY_STOP_ACTIVE', message: 'Demo futures trading is halted by an active emergency stop.', idempotencyKey, signalId, source });
   }
 
   const isDuplicate = !!futuresOrdersRepository.findRecentSimilarOrder(MODE, userId, { symbol, action, price, windowMs: DUPLICATE_WINDOW_MS });
   if (isDuplicate) {
-    return persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeProfit, price, reasonCode: 'DUPLICATE_ORDER', message: 'An equivalent order was just submitted.', idempotencyKey, signalId, source });
+    return persistRejected({ id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, price, reasonCode: 'DUPLICATE_ORDER', message: 'An equivalent order was just submitted.', idempotencyKey, signalId, source });
   }
 
   if (action === 'close') {
-    return closeDemoFuturesPosition({ id, userId, symbol, price, idempotencyKey, signalId, source });
+    return closeDemoFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source });
   }
 
   // open_long / open_short
   if (typeof stopLoss !== 'number' || typeof takeProfit !== 'number') {
-    return persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeProfit, price, reasonCode: 'MISSING_RISK_PARAMS', message: 'stopLoss and takeProfit are required to open a futures position.', idempotencyKey, signalId, source });
+    return persistRejected({ id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, price, reasonCode: 'MISSING_RISK_PARAMS', message: 'stopLoss and takeProfit are required to open a futures position.', idempotencyKey, signalId, source });
   }
   if (typeof leverage !== 'number' || leverage < 1) {
-    return persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeProfit, price, reasonCode: 'INVALID_LEVERAGE', message: 'leverage must be a number >= 1.', idempotencyKey, signalId, source });
+    return persistRejected({ id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, price, reasonCode: 'INVALID_LEVERAGE', message: 'leverage must be a number >= 1.', idempotencyKey, signalId, source });
   }
 
   const riskSettingsRow = defaultRiskSettings(userId);
   if (leverage > riskSettingsRow.max_leverage) {
-    return persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeProfit, price, reasonCode: 'LEVERAGE_TOO_HIGH', message: `Leverage ${leverage}x exceeds the configured maximum of ${riskSettingsRow.max_leverage}x.`, idempotencyKey, signalId, source });
+    return persistRejected({ id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, price, reasonCode: 'LEVERAGE_TOO_HIGH', message: `Leverage ${leverage}x exceeds the configured maximum of ${riskSettingsRow.max_leverage}x.`, idempotencyKey, signalId, source });
   }
 
   const existingPosition = futuresPositionsRepository.findOpenPositionBySymbol(MODE, userId, symbol);
   if (existingPosition) {
-    return persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeProfit, price, reasonCode: 'POSITION_ALREADY_OPEN', message: `An open ${existingPosition.side} position already exists for ${symbol} (one-way mode: one net position per symbol).`, idempotencyKey, signalId, source });
+    return persistRejected({ id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, price, reasonCode: 'POSITION_ALREADY_OPEN', message: `An open ${existingPosition.side} position already exists for ${symbol} (one-way mode: one net position per symbol).`, idempotencyKey, signalId, source });
   }
 
   const side = action === 'open_long' ? 'long' : 'short';
   const liquidationPrice = estimateLiquidationPrice({ entryPrice: price, leverage, side });
   if (!isStopLossSafeFromLiquidation({ side, stopLoss, liquidationPrice })) {
     return persistRejected({
-      id, userId, symbol, action, leverage, stopLoss, takeProfit, price,
+      id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, price,
       reasonCode: 'STOP_LOSS_BEYOND_LIQUIDATION',
       message: `Stop-loss ${stopLoss} would never trigger — liquidation (est. ${liquidationPrice.toFixed(2)}) happens first at ${leverage}x leverage. Use a tighter stop or lower leverage.`,
       idempotencyKey, signalId, source,
@@ -154,11 +154,11 @@ async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', acti
 
   if (!validation.accepted) {
     logger.warn('futures-demo-orders', `Demo futures ${action} rejected for ${symbol}: ${validation.reasonCode}`, { message: validation.message }, MODE);
-    return persistRejected({ id, userId, symbol, action, leverage, stopLoss, takeProfit, price, reasonCode: validation.reasonCode, message: validation.message, idempotencyKey, signalId, source });
+    return persistRejected({ id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, price, reasonCode: validation.reasonCode, message: validation.message, idempotencyKey, signalId, source });
   }
 
   const position = futuresPortfolioService.openPosition(MODE, userId, {
-    symbol, exchange, side, leverage, qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, liquidationPrice,
+    symbol, exchange, side, leverage, qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, liquidationPrice, signalId, source, strategyId, timeframe, trailingPercent,
   });
 
   const order = futuresOrdersRepository.insertOrder(MODE, userId, {
@@ -171,10 +171,10 @@ async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', acti
   return order;
 }
 
-function closeDemoFuturesPosition({ id, userId, symbol, price, idempotencyKey, signalId, source }) {
+function closeDemoFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source }) {
   const openPosition = futuresPositionsRepository.findOpenPositionBySymbol(MODE, userId, symbol);
   if (!openPosition) {
-    return persistRejected({ id, userId, symbol, action: 'close', price, reasonCode: 'NO_OPEN_POSITION_TO_CLOSE', message: `No open Demo futures position for ${symbol}.`, idempotencyKey, signalId, source });
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', price, reasonCode: 'NO_OPEN_POSITION_TO_CLOSE', message: `No open Demo futures position for ${symbol}.`, idempotencyKey, signalId, source });
   }
 
   const { realizedPnl } = futuresPortfolioService.closePosition(MODE, userId, openPosition.id, price);

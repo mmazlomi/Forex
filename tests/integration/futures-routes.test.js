@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startAuthedTestServer } = require('../fixtures/test-server');
 const marketDataService = require('../../src/services/market-data/market-data-service');
+const exchangeClientFactory = require('../../src/services/exchanges/exchange-client-factory');
 
 async function json(res) {
   return res.json();
@@ -163,4 +164,61 @@ test('GET /api/futures/risk-settings returns defaults including maxLeverage', as
   t.after(close);
   const body = await json(await authedFetch('/api/futures/risk-settings?mode=demo'));
   assert.equal(body.data.max_leverage, 10);
+});
+
+// CoinEx support (added alongside KuCoin — see exchange-client-factory.js's FUTURES_EXCHANGES):
+// still additive, so 'binance' etc. must stay rejected (covered above), while 'coinex' must now
+// work the same way 'kucoin' always has.
+test('futures routes: CoinEx is a genuinely supported second futures exchange', async (t) => {
+  const { close, authedFetch } = await startAuthedTestServer();
+  t.after(close);
+
+  await t.test('GET /api/futures/exchanges lists both kucoin and coinex', async () => {
+    const body = await json(await authedFetch('/api/futures/exchanges'));
+    const ids = body.data.map((e) => e.id);
+    assert.ok(ids.includes('kucoin'));
+    assert.ok(ids.includes('coinex'));
+  });
+
+  await t.test('POST /api/futures/assets accepts exchange: "coinex"', async () => {
+    const res = await authedFetch('/api/futures/assets?mode=demo', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol: 'BTC/USDT:USDT', exchange: 'coinex', leverage: 5 }),
+    });
+    const body = await json(res);
+    assert.equal(res.status, 201);
+    assert.equal(body.data.exchange, 'coinex');
+  });
+
+  await t.test('PUT .../exchange moves an asset from kucoin to coinex without removing/re-adding it', async (t) => {
+    await authedFetch('/api/futures/assets?mode=demo', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol: 'ETH/USDT:USDT', exchange: 'kucoin', leverage: 3 }),
+    });
+    t.mock.method(exchangeClientFactory, 'getPublicFuturesExchange', () => ({
+      loadMarkets: async () => {},
+      markets: { 'ETH/USDT:USDT': {} },
+    }));
+
+    const res = await authedFetch('/api/futures/assets/ETH%2FUSDT%3AUSDT/exchange?mode=demo&exchange=kucoin', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newExchange: 'coinex' }),
+    });
+    const body = await json(res);
+    assert.equal(res.status, 200);
+    assert.equal(body.data.exchange, 'coinex');
+    assert.equal(body.data.leverage, 3, 'leverage carries over unchanged');
+
+    // The old (symbol, kucoin) row is gone — moved, not duplicated.
+    const list = await json(await authedFetch('/api/futures/assets?mode=demo'));
+    const ethRows = list.data.filter((a) => a.symbol === 'ETH/USDT:USDT');
+    assert.equal(ethRows.length, 1);
+    assert.equal(ethRows[0].exchange, 'coinex');
+  });
+
+  await t.test('PUT .../exchange still rejects a genuinely unsupported destination exchange', async () => {
+    const res = await authedFetch('/api/futures/assets/BTC%2FUSDT%3AUSDT/exchange?mode=demo&exchange=coinex', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newExchange: 'binance' }),
+    });
+    assert.equal(res.status, 400);
+  });
 });

@@ -44,6 +44,11 @@ const config = Object.freeze({
   },
 
   fundamentalApiKey: env.FUNDAMENTAL_API_KEY || '',
+  // CoinGecko's free/keyless tier has a very low rate limit (as low as ~5-15 req/min); this is
+  // the minimum spacing enforced between outbound CoinGecko requests so scoring a full watchlist
+  // in one scan cycle doesn't burst through it and 429 every symbol behind the first few. A paid
+  // FUNDAMENTAL_API_KEY tier can raise CoinGecko's actual limit — lower this to match if so.
+  coingeckoMinIntervalMs: parseInteger('COINGECKO_MIN_INTERVAL_MS', env.COINGECKO_MIN_INTERVAL_MS, 1500),
 
   initialDemoBalance: parseNumber('INITIAL_DEMO_BALANCE', env.INITIAL_DEMO_BALANCE, 10000),
   maxRiskPerTradePercent: parseNumber('MAX_RISK_PER_TRADE_PERCENT', env.MAX_RISK_PER_TRADE_PERCENT, 1),
@@ -76,6 +81,17 @@ const config = Object.freeze({
   futuresAutoTradeIntervalMs: parseInteger('FUTURES_AUTO_TRADE_INTERVAL_MS', env.FUTURES_AUTO_TRADE_INTERVAL_MS, 5 * 60 * 1000),
   enableFuturesAutoTrading: parseBool(env.ENABLE_FUTURES_AUTO_TRADING, false),
   futuresAutoTradeMaxLeverage: parseNumber('FUTURES_AUTO_TRADE_MAX_LEVERAGE', env.FUTURES_AUTO_TRADE_MAX_LEVERAGE, 3),
+
+  // Liquidity Sweep Reversal's spot scheduler (reversal-spot-auto-trader.js) — same
+  // deliberately-high-friction restart-only .env-edit gate as enableFuturesAutoTrading, same
+  // reasoning (real money, unattended, no human per-trade). Unlike the original spot auto-trader
+  // (autoTradeIntervalMs above, hard-coded Demo-only, "not configurable"), this genuinely can
+  // place real spot orders — but only for assets with their own explicit
+  // real_auto_trade_enabled flag set (see schema.js's migrateAddRealAutoTradeColumn) AND usable
+  // Real credentials for that specific user. Reuses futuresAutoTradeIntervalMs for polling
+  // cadence rather than adding a third near-identical interval env var — this is the same
+  // Liquidity Sweep Reversal ecosystem either way, just a different execution adapter.
+  enableSpotAutoTrading: parseBool(env.ENABLE_SPOT_AUTO_TRADING, false),
 
   // Multi-strategy auto-selection (strategy-selector.js): periodically backtests every built-in
   // strategy per 'auto'-mode watchlist asset and keeps the top-N by win rate selected for
@@ -146,6 +162,9 @@ function validateConfig(cfg) {
   }
   if (cfg.strategySelectionMinTrades < 1) {
     errors.push(`STRATEGY_SELECTION_MIN_TRADES must be >= 1, got ${cfg.strategySelectionMinTrades}.`);
+  }
+  if (cfg.coingeckoMinIntervalMs < 0) {
+    errors.push(`COINGECKO_MIN_INTERVAL_MS must be >= 0, got ${cfg.coingeckoMinIntervalMs}.`);
   }
 
   if (errors.length > 0) {

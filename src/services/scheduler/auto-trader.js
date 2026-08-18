@@ -4,6 +4,7 @@ const assetsRepository = require('../../database/repositories/assets-repository'
 const positionsRepository = require('../../database/repositories/positions-repository');
 const signalsService = require('../signals');
 const { placeDemoOrder } = require('../orders/demo-orders');
+const { STRATEGY_ID: LSR_STRATEGY_ID } = require('../backtesting/reversal-backtest-engine');
 const logger = require('../logging/logger');
 const config = require('../../../config/config');
 
@@ -37,6 +38,13 @@ async function processAsset(asset) {
   const assetType = asset.asset_type;
 
   try {
+    // Liquidity Sweep Reversal is a stateful, multi-timeframe sequence, not a per-candle weighted
+    // score — scoring it via generateSignal()/generateCombinedSignal() below would silently treat
+    // its strategy_id as an unknown STRATEGIES key and fall back to "balanced". It's traded by
+    // its own scheduler instead (reversal-spot-auto-trader.js, long-only) — see
+    // futures-auto-trader.js's identical guard and strategies.js's EXTENDED_STRATEGY_IDS comment.
+    if (asset.strategy_id === LSR_STRATEGY_ID) return;
+
     // No providerId — fundamental-analysis/index.js resolves the correct CoinGecko coin id
     // for crypto assets from the ticker itself. Each watchlist asset carries its own strategy
     // (set via PUT /api/assets/:symbol/strategy, defaults to "balanced") unless it's opted into
@@ -62,6 +70,7 @@ async function processAsset(asset) {
       }
       const order = await placeDemoOrder({
         userId, symbol, exchange, side: 'buy', stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, signalId: signal.id,
+        trailingPercent: asset.trailing_percent,
       });
       logger.info('auto-trader', `AI auto-trade BUY ${order.status} for ${symbol}`, { orderId: order.id, rejectReason: order.reject_reason, userId }, MODE);
     } else if (signal.status === 'SELL' && openPosition) {

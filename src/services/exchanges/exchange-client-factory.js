@@ -21,6 +21,29 @@ function resolveExchangeClass(exchangeName) {
   return ExchangeClass;
 }
 
+// Credential-free public clients are cached per exchange id for this long, then rebuilt from
+// scratch on next use. ccxt's own loadMarkets() already skips its network call once a client's
+// this.markets is populated — but every getPublicExchange()/getPublicFuturesExchange() call used
+// to hand callers a BRAND NEW client instance, so that built-in skip never actually triggered:
+// every position/signal/candle fetch was re-downloading the exchange's entire market list before
+// it could do the one ticker/OHLCV call it actually needed. Reusing the same instance across calls
+// makes that skip work as designed; the TTL just bounds how long a delisted/newly-listed symbol
+// can go unnoticed.
+const PUBLIC_CLIENT_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour — market lists change rarely
+const publicSpotClientCache = new Map();
+const publicFuturesClientCache = new Map();
+
+function getCachedPublicClient(cache, exchangeName, buildClient) {
+  const key = String(exchangeName || '').toLowerCase();
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.createdAt < PUBLIC_CLIENT_CACHE_TTL_MS) {
+    return cached.client;
+  }
+  const client = buildClient();
+  cache.set(key, { client, createdAt: Date.now() });
+  return client;
+}
+
 // On exchanges where ccxt's `has.fetchCurrencies` is true (e.g. CoinEx), loadMarkets() fetches
 // currency deposit/withdrawal config as a PREREQUISITE to the market list itself — see ccxt's
 // Exchange#loadMarketsHelper. This app never reads currency-level data (no deposit/withdraw UI,
@@ -36,8 +59,10 @@ function skipUnusedCurrencyFetch(client) {
 
 /** Market-data / read-only client. No credentials — works for any exchange without an account. */
 function getPublicExchange(exchangeName) {
-  const ExchangeClass = resolveExchangeClass(exchangeName);
-  return skipUnusedCurrencyFetch(new ExchangeClass({ enableRateLimit: true, timeout: config.requestTimeoutMs, options: SPOT_ONLY_OPTIONS }));
+  return getCachedPublicClient(publicSpotClientCache, exchangeName, () => {
+    const ExchangeClass = resolveExchangeClass(exchangeName);
+    return skipUnusedCurrencyFetch(new ExchangeClass({ enableRateLimit: true, timeout: config.requestTimeoutMs, options: SPOT_ONLY_OPTIONS }));
+  });
 }
 
 /** Demo-mode client: uses DEMO_* credentials and enables the exchange sandbox/testnet if supported. */
@@ -81,40 +106,74 @@ function getRealExchange(userId) {
 }
 
 // Phase 2 (Futures): a completely separate resolver path from the spot functions above — none of
-// them touch SPOT_ONLY_OPTIONS or each other. KuCoin only, chosen because it's confirmed reachable
-// from this app's production host (KuCoin's API returned 403/timeouts from here — a real,
-// server-side network/CDN block, not a code bug; see docs/architecture.md Phase 2 section).
-// KuCoin's futures API is a genuinely SEPARATE ccxt class (`kucoinfutures`, not `kucoin` with a
-// defaultType option) — resolveExchangeClass('kucoin') above resolves to the *spot* class, so
-// futures needs its own class resolver, mapping the same user-facing/credential exchange name
-// ('kucoin', the same one used everywhere else in this app) to the correct ccxt class. Confirmed
-// via ccxt's own kucoinfutures.js/kucoin.js source: setLeverage/setMarginMode/fetchPositions/
-// createOrder/fetchBalance all present, defaultType 'swap' built into the class already, and
-// fetchPositions' returned liquidationPrice uses the same unified field name KuCoin's did. Any
-// other exchange id is rejected outright rather than silently attempted unverified.
-const FUTURES_EXCHANGE_ID = 'kucoin';
-const FUTURES_CCXT_CLASS_ID = 'kucoinfutures';
+// them touch SPOT_ONLY_OPTIONS or each other. Each entry here is an exchange that's been
+// individually confirmed reachable from this app's production host (Bybit was rejected outright —
+// 403/CloudFront geo-block plus timeouts, a real server-side network block, not a code bug — see
+// docs/architecture.md Phase 2 section) and whose ccxt futures/swap surface (setLeverage,
+// fetchPositions, createOrder, fetchBalance, reduceOnly) has been read/verified directly against
+// ccxt's source. Any exchange id not in this map is rejected outright rather than silently
+// attempted unverified.
+//
+// `ccxtId`: which ccxt class implements this exchange's futures/swap API. KuCoin's is a genuinely
+// SEPARATE class (`kucoinfutures`, not `kucoin` with a defaultType option) — resolveExchangeClass
+// above resolves 'kucoin' to the *spot* class. CoinEx, by contrast, is a single unified class
+// (`coinex`) that serves spot and swap off one class via `options.defaultType`.
+//
+// `instantiateOptions`: extra ccxt constructor options merged in when instantiating. CoinEx needs
+// `options.defaultType: 'swap'` so unqualified calls (loadMarkets, fetchTicker, etc.) hit the
+// futures/swap endpoints instead of spot; KuCoin's dedicated class needs nothing extra.
+//
+// `leverageMode`: how leverage/margin-mode get set on this exchange, since it differs by API shape
+// — see futures-real-orders.js, the only caller that branches on it. 'inline': merged straight into
+// the createOrder() params (KuCoin's own default for contract orders — confirmed via ccxt's
+// createContractOrderRequest() source). 'preset': leverage/margin-mode must be set via a separate
+// setLeverage() call before createOrder() — CoinEx's createOrder does not accept leverage/marginMode
+// in its params (confirmed via ccxt's coinex.js createOrderRequest()); its setLeverage() accepts
+// marginMode via params (default 'cross') and requires an explicit symbol argument (verified: CoinEx
+// futures uses the standard swap fetchPositions().liquidationPrice unified field, populated from
+// its own `liq_price`, and reduceOnly on close works identically to KuCoin's).
+const FUTURES_EXCHANGES = {
+  kucoin: { ccxtId: 'kucoinfutures', instantiateOptions: {}, leverageMode: 'inline' },
+  coinex: { ccxtId: 'coinex', instantiateOptions: { options: { defaultType: 'swap' } }, leverageMode: 'preset' },
+};
+const DEFAULT_FUTURES_EXCHANGE_ID = 'kucoin';
 
 function assertFuturesExchangeSupported(exchangeName) {
   const id = String(exchangeName || '').toLowerCase();
-  if (id !== FUTURES_EXCHANGE_ID) {
-    throw new Error(`Futures trading is only supported on KuCoin in this app (got "${exchangeName}").`);
+  if (!FUTURES_EXCHANGES[id]) {
+    throw new Error(`Futures trading is only supported on ${Object.keys(FUTURES_EXCHANGES).join(', ')} in this app (got "${exchangeName}").`);
   }
+  return id;
+}
+
+/** [{id, name}] for every futures-supported exchange — backs GET /api/futures/exchanges. */
+function getSupportedFuturesExchanges() {
+  return Object.keys(FUTURES_EXCHANGES).map((id) => {
+    const ExchangeClass = ccxt[FUTURES_EXCHANGES[id].ccxtId];
+    return { id, name: (ExchangeClass && new ExchangeClass({}).name) || id };
+  });
 }
 
 function resolveFuturesExchangeClass(exchangeName) {
-  assertFuturesExchangeSupported(exchangeName);
-  const ExchangeClass = ccxt[FUTURES_CCXT_CLASS_ID];
+  const id = assertFuturesExchangeSupported(exchangeName);
+  const { ccxtId } = FUTURES_EXCHANGES[id];
+  const ExchangeClass = ccxt[ccxtId];
   if (!ExchangeClass) {
-    throw new Error(`ccxt has no "${FUTURES_CCXT_CLASS_ID}" class in this installed version.`);
+    throw new Error(`ccxt has no "${ccxtId}" class in this installed version.`);
   }
   return ExchangeClass;
 }
 
-/** Market-data / read-only futures client. No credentials — KuCoin only. */
-function getPublicFuturesExchange(exchangeName = FUTURES_EXCHANGE_ID) {
-  const ExchangeClass = resolveFuturesExchangeClass(exchangeName);
-  return new ExchangeClass({ enableRateLimit: true, timeout: config.requestTimeoutMs });
+function instantiateFuturesExchange(exchangeName, credentialOptions = {}) {
+  const id = assertFuturesExchangeSupported(exchangeName);
+  const ExchangeClass = resolveFuturesExchangeClass(id);
+  const { instantiateOptions } = FUTURES_EXCHANGES[id];
+  return new ExchangeClass({ enableRateLimit: true, timeout: config.requestTimeoutMs, ...credentialOptions, ...instantiateOptions });
+}
+
+/** Market-data / read-only futures client. No credentials. */
+function getPublicFuturesExchange(exchangeName = DEFAULT_FUTURES_EXCHANGE_ID) {
+  return getCachedPublicClient(publicFuturesClientCache, exchangeName, () => instantiateFuturesExchange(exchangeName));
 }
 
 /**
@@ -124,12 +183,9 @@ function getPublicFuturesExchange(exchangeName = FUTURES_EXCHANGE_ID) {
  * order is ever wanted for Demo.
  */
 function getDemoFuturesExchange() {
-  const ExchangeClass = resolveFuturesExchangeClass(config.demoExchange.name || FUTURES_EXCHANGE_ID);
-  const client = new ExchangeClass({
+  const client = instantiateFuturesExchange(config.demoExchange.name || DEFAULT_FUTURES_EXCHANGE_ID, {
     apiKey: config.demoExchange.apiKey,
     secret: config.demoExchange.apiSecret,
-    enableRateLimit: true,
-    timeout: config.requestTimeoutMs,
   });
   if (typeof client.setSandboxMode === 'function') {
     client.setSandboxMode(true);
@@ -138,23 +194,16 @@ function getDemoFuturesExchange() {
 }
 
 /**
- * Real-mode futures client for this user: same KuCoin account/credentials as their spot Real
- * trading (resolved via the same resolveRealCredentials()) — KuCoin API keys work across both the
- * spot and futures endpoints on the same account — just instantiated as the dedicated
- * `kucoinfutures` ccxt class instead of `kucoin`.
+ * Real-mode futures client for this user: same exchange account/credentials as their spot Real
+ * trading (resolved via the same resolveRealCredentials()) — instantiated as the exchange's
+ * dedicated futures/swap ccxt class+options rather than its plain spot one.
  */
 function getRealFuturesExchange(userId) {
   const credentials = resolveRealCredentials(userId);
   if (!credentials.name) {
     throw new Error('No Real Trading exchange is configured (set it from the Real Trading tab, or REAL_EXCHANGE_NAME in .env).');
   }
-  const ExchangeClass = resolveFuturesExchangeClass(credentials.name);
-  return new ExchangeClass({
-    apiKey: credentials.apiKey,
-    secret: credentials.apiSecret,
-    enableRateLimit: true,
-    timeout: config.requestTimeoutMs,
-  });
+  return instantiateFuturesExchange(credentials.name, { apiKey: credentials.apiKey, secret: credentials.apiSecret });
 }
 
 /** Checks whether an exchange declares a sandbox/testnet URL in ccxt, without making a network call. */
@@ -177,4 +226,7 @@ module.exports = {
   getPublicFuturesExchange,
   getDemoFuturesExchange,
   getRealFuturesExchange,
+  isFuturesExchangeSupported: (exchangeName) => !!FUTURES_EXCHANGES[String(exchangeName || '').toLowerCase()],
+  getFuturesLeverageMode: (exchangeName) => FUTURES_EXCHANGES[String(exchangeName || '').toLowerCase()]?.leverageMode,
+  getSupportedFuturesExchanges,
 };

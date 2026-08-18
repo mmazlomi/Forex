@@ -1,17 +1,20 @@
 'use strict';
 
 /**
- * Futures: KuCoin-only, own symbol picker, own Demo/Real portfolios, positions, orders, and
+ * Futures: own exchange/symbol picker, own Demo/Real portfolios, positions, orders, and
  * watchlist/auto-trade — deliberately zero shared code paths with Spot's dashboard.js, mirroring
  * the backend's "separate everything" design. Self-contained module, same style as
  * mode-switcher.js/order-confirmation.js (not part of Dashboard's IIFE). Its cards live inside
  * the Demo Trading / Real Trading tabs (owned by index.html/dashboard.js), and its watchlist
  * management lives on the Watchlist tab — this module only owns the DOM ids inside those cards,
  * not tab switching itself (see Dashboard.switchToTab, called from the "Trade" buttons below).
+ * Multiple exchanges are supported (KuCoin, CoinEx — see exchange-client-factory.js's
+ * FUTURES_EXCHANGES) via the #futures-exchange-input select, read fresh on every use rather than
+ * cached in a module variable — same pattern dashboard.js uses for Spot's #exchange-input.
  */
 const Futures = (() => {
-  const EXCHANGE = 'kucoin';
   let lastPrice = null;
+  let exchangesCache = [];
   let symbolsCache = [];
   let strategiesCache = [];
   // Private copy, deliberately not shared with dashboard.js's own TIMEFRAME_OPTIONS — see this
@@ -149,6 +152,24 @@ const Futures = (() => {
     return document.getElementById('futures-symbol-input').value.trim();
   }
 
+  function getCurrentExchange() {
+    return document.getElementById('futures-exchange-input').value || 'kucoin';
+  }
+
+  // Mirrors dashboard.js's loadExchangeOptions() for Spot, but sourced from
+  // Api.listFuturesExchanges() (only exchanges FUTURES_EXCHANGES actually supports) rather than
+  // the full curated Spot exchange list.
+  async function loadFuturesExchangeOptions() {
+    try {
+      exchangesCache = await Api.listFuturesExchanges();
+      const select = document.getElementById('futures-exchange-input');
+      clear(select);
+      exchangesCache.forEach((ex) => select.appendChild(el('option', { value: ex.id }, ex.name)));
+    } catch (err) {
+      toast(`Failed to load futures exchange list: ${err.message}`, 'error');
+    }
+  }
+
   // The symbol input lives on the Watchlist tab, but the order forms it drives live on the Demo
   // Trading / Real Trading tabs — this readout is the only visible link between them, so a user
   // switching tabs can always see which symbol they're about to trade.
@@ -162,7 +183,7 @@ const Futures = (() => {
 
   async function refreshSymbolSuggestions() {
     try {
-      symbolsCache = await Api.listFuturesSymbols(EXCHANGE);
+      symbolsCache = await Api.listFuturesSymbols(getCurrentExchange());
     } catch (err) {
       toast(`Failed to load futures symbols: ${err.message}`, 'error');
     }
@@ -183,6 +204,73 @@ const Futures = (() => {
 
   // ---------- portfolio / positions / orders ----------
 
+  // Which strategy/strategies opened this position — resolved server-side from the signal that
+  // triggered it (see futures-portfolio-service.js's describeStrategyIds enrichment). A combined
+  // signal (auto-mode, majority vote across 2-3 strategies) shows every contributing strategy
+  // joined with "+", with a tooltip breaking down how each one voted; a plain manual order with no
+  // linked signal shows "-".
+  function buildStrategyCell(p) {
+    const cell = el('td');
+    if (!p.strategies || p.strategies.length === 0) {
+      cell.textContent = '-';
+      cell.title = 'Not opened from a generated signal.';
+      return cell;
+    }
+    cell.textContent = p.strategies.map((s) => s.name).join(' + ');
+    if (p.combined_votes_json) {
+      try {
+        const votes = JSON.parse(p.combined_votes_json);
+        cell.title = `Votes — ${Object.entries(votes).map(([id, vote]) => `${strategyName(id)}: ${vote}`).join(', ')}`;
+      } catch {
+        cell.title = p.source === 'auto' ? 'Opened by AI auto-trade.' : 'Opened from a manually generated signal.';
+      }
+    } else {
+      cell.title = p.source === 'auto' ? 'Opened by AI auto-trade.' : 'Opened from a manually generated signal.';
+    }
+    return cell;
+  }
+
+  // The timeframe that led to this position's signal — a plain candle timeframe (e.g. '1h') for
+  // the weighted-strategy engine, or a "htf/signal/entry" composite (e.g. '4h/15m/5m') for
+  // Liquidity Sweep Reversal, which watches three timeframes at once — see
+  // reversal-auto-trader.js's LSR_TIMEFRAME_LABEL. '-' when there's no strategy attribution at all.
+  function buildTimeframeCell(p) {
+    return el('td', {}, p.timeframe || '-');
+  }
+
+  // Full raw JSON for one position (including the strategy/signal/vote fields above, plus
+  // everything else the API returns) — hidden by default, toggled per-row by the "Raw" button
+  // built in buildRawToggleCell. A plain <details>-less toggle (a sibling <tr>, hidden by default)
+  // rather than a <details> element, since a <details> can't itself be a <tr>/<td>.
+  function buildRawRow(p, colSpan) {
+    const row = el('tr', { class: 'position-raw-row' });
+    row.hidden = true;
+    const cell = el('td', { colspan: String(colSpan) });
+    cell.appendChild(el('pre', { class: 'raw-output' }, JSON.stringify(p, null, 2)));
+    row.appendChild(cell);
+    return row;
+  }
+
+  function buildRawToggleCell(rawRow) {
+    const cell = el('td');
+    const btn = el('button', { type: 'button', class: 'raw-toggle-btn' }, 'Raw');
+    btn.addEventListener('click', () => { rawRow.hidden = !rawRow.hidden; });
+    cell.appendChild(btn);
+    return cell;
+  }
+
+  const POSITION_TABLE_COLUMN_COUNT = 14; // Symbol..Take (11) + Strategy + Timeframe + Raw-toggle
+
+  // Mirrors dashboard.js's identical helper — see its comment.
+  function buildStopCell(p) {
+    const cell = el('td', {}, fmtPrice(p.stop_loss));
+    if (p.trailing_percent) {
+      cell.appendChild(el('span', {}, ` (trailing ${fmt(p.trailing_percent, 2)}%)`));
+      cell.title = `Trailing stop: ${fmt(p.trailing_percent, 2)}% behind the high-water mark of ${fmtPrice(p.trailing_high_water_mark)} — moves in your favor only, never loosens.`;
+    }
+    return cell;
+  }
+
   function renderPositionsTable(body, positions) {
     clear(body);
     positions.forEach((p) => {
@@ -195,12 +283,15 @@ const Futures = (() => {
         liqCell.className = 'text-negative';
         liqCell.title = `Only ${fmt(p.liquidationDistancePercent, 1)}% away from liquidation at the current price.`;
       }
+      const rawRow = buildRawRow(p, POSITION_TABLE_COLUMN_COUNT);
       row.append(
         el('td', {}, p.symbol), el('td', {}, p.exchange || '-'), el('td', {}, p.side), el('td', {}, `${p.leverage}x`), el('td', {}, fmt(p.qty, 6)),
         el('td', {}, fmtPrice(p.entry_price)), el('td', {}, p.currentPrice != null ? fmtPrice(p.currentPrice) : '-'),
-        unrealizedCell, liqCell, el('td', {}, fmtPrice(p.stop_loss)), el('td', {}, fmtPrice(p.take_profit))
+        unrealizedCell, liqCell, buildStopCell(p), el('td', {}, fmtPrice(p.take_profit)),
+        buildStrategyCell(p), buildTimeframeCell(p), buildRawToggleCell(rawRow)
       );
       body.appendChild(row);
+      body.appendChild(rawRow);
     });
   }
 
@@ -210,10 +301,32 @@ const Futures = (() => {
       const row = el('tr');
       row.append(
         el('td', {}, formatTimestamp(o.created_at_utc)), el('td', {}, o.symbol || '-'), el('td', {}, o.action.replace('_', ' ')), el('td', {}, `${o.leverage}x`),
+        buildStrategyCell(o), buildTimeframeCell(o),
         el('td', {}, fmt(o.qty, 6)), el('td', {}, fmtPrice(o.price)), el('td', {}, o.status), el('td', {}, o.reject_reason || '')
       );
       body.appendChild(row);
     });
+  }
+
+  // Complete round-trip trade history — every CLOSED futures position, most recent first, with
+  // which strategy/timeframe opened it and its realized profit/loss — private copy, mirroring
+  // dashboard.js's identical helper plus a Leverage column futures positions have and spot doesn't.
+  function renderTradeHistoryTable(body, emptyEl, trades) {
+    clear(body);
+    trades.forEach((t) => {
+      const row = el('tr');
+      const pnlCell = el('td', {}, t.realized_pnl != null ? fmt(t.realized_pnl) : '-');
+      if (t.realized_pnl > 0) pnlCell.className = 'text-positive';
+      else if (t.realized_pnl < 0) pnlCell.className = 'text-negative';
+      const strategyLabel = t.strategies && t.strategies.length > 0 ? t.strategies.map((s) => s.name).join(' + ') : '-';
+      row.append(
+        el('td', {}, formatTimestamp(t.opened_at_utc)), el('td', {}, formatTimestamp(t.closed_at_utc)),
+        el('td', {}, t.symbol), el('td', {}, t.side), el('td', {}, `${t.leverage}x`), el('td', {}, strategyLabel), el('td', {}, t.timeframe || '-'),
+        el('td', {}, fmt(t.qty, 6)), el('td', {}, fmtPrice(t.entry_price)), el('td', {}, fmtPrice(t.exit_price)), pnlCell
+      );
+      body.appendChild(row);
+    });
+    if (emptyEl) emptyEl.hidden = trades.length > 0;
   }
 
   async function refreshPortfolio(mode) {
@@ -251,6 +364,9 @@ const Futures = (() => {
 
       const orders = await Api.listFuturesOrders(mode, 20);
       renderOrdersTable(document.getElementById(`futures-${mode}-orders-body`), orders);
+
+      const trades = await Api.getFuturesTradeHistory(mode, 50);
+      renderTradeHistoryTable(document.getElementById(`futures-${mode}-trade-history-body`), document.getElementById(`futures-${mode}-trade-history-empty`), trades);
     } catch (err) {
       toast(`Failed to load ${mode} futures portfolio: ${err.message}`, 'error');
     }
@@ -271,21 +387,22 @@ const Futures = (() => {
     });
   }
 
-  async function submitOrder(mode, action, leverage, stopLoss, takeProfit, qty) {
+  async function submitOrder(mode, action, leverage, stopLoss, takeProfit, qty, trailingPercent) {
     const symbol = getCurrentSymbol();
+    const exchange = getCurrentExchange();
     const isOpen = action === 'open_long' || action === 'open_short';
     const side = action === 'open_long' ? 'LONG' : action === 'open_short' ? 'SHORT' : 'CLOSE';
     const estimatedValue = isOpen && qty != null && lastPrice != null ? qty * lastPrice : null;
 
     const confirmation = await OrderConfirmation.show({
-      mode, symbol, exchange: EXCHANGE, side,
+      mode, symbol, exchange, side,
       price: lastPrice, stopLoss: isOpen ? stopLoss : null, takeProfit: isOpen ? takeProfit : null,
       estimatedValue, leverage: isOpen ? leverage : null,
     });
     if (!confirmation.confirmed) return;
 
     try {
-      const body = { symbol, exchange: EXCHANGE, action, leverage, stopLoss, takeProfit, qty };
+      const body = { symbol, exchange, action, leverage, stopLoss, takeProfit, qty, trailingPercent };
       const result = mode === 'real'
         ? await Api.placeRealFuturesOrder({ ...body, confirmationText: confirmation.confirmationText })
         : await Api.placeDemoFuturesOrder(body);
@@ -314,7 +431,8 @@ const Futures = (() => {
       const stopLoss = form.stopLoss.value ? Number(form.stopLoss.value) : undefined;
       const takeProfit = form.takeProfit.value ? Number(form.takeProfit.value) : undefined;
       const qty = form.qty.value ? Number(form.qty.value) : undefined;
-      await submitOrder(mode, action, leverage, stopLoss, takeProfit, qty);
+      const trailingPercent = form.trailingPercent.value ? Number(form.trailingPercent.value) : undefined;
+      await submitOrder(mode, action, leverage, stopLoss, takeProfit, qty, trailingPercent);
     });
   }
 
@@ -366,6 +484,35 @@ const Futures = (() => {
         }).catch(() => {
           priceCell.textContent = '-';
         });
+
+        // Inline switcher, mirroring dashboard.js#refreshSpotWatchlist's exchange <select> exactly
+        // — lets the exchange be changed in place instead of removing/re-adding the row. Includes
+        // a synthetic option for asset.exchange if it's outside exchangesCache (e.g. added
+        // directly via the API) so the select still shows the real current value.
+        const exchangeSelect = el('select');
+        if (!exchangesCache.some((ex) => ex.id === asset.exchange)) {
+          exchangeSelect.appendChild(el('option', { value: asset.exchange, selected: 'selected' }, asset.exchange));
+        }
+        exchangesCache.forEach((ex) => {
+          const opt = el('option', { value: ex.id }, ex.name);
+          if (ex.id === asset.exchange) opt.setAttribute('selected', 'selected');
+          exchangeSelect.appendChild(opt);
+        });
+        exchangeSelect.title = 'Switch which exchange this asset is priced/traded on, without removing and re-adding it.';
+        exchangeSelect.addEventListener('change', async () => {
+          const newExchange = exchangeSelect.value;
+          try {
+            await Api.setFuturesExchange(mode, asset.symbol, asset.exchange, newExchange);
+            toast(`${asset.symbol} moved to ${newExchange}.`, 'success');
+            await refreshWatchlist(mode);
+          } catch (err) {
+            exchangeSelect.value = asset.exchange;
+            toast(`Failed to change exchange: ${err.message}`, 'error');
+          }
+        });
+        const exchangeCell = el('td');
+        exchangeCell.appendChild(exchangeSelect);
+        row.appendChild(exchangeCell);
 
         const timeframeSelect = el('select');
         TIMEFRAME_OPTIONS.forEach((tf) => {
@@ -420,6 +567,26 @@ const Futures = (() => {
           strategyCell.appendChild(strategySelect);
         }
         row.appendChild(strategyCell);
+
+        // Default trailing-stop distance for a position opened from this asset (manually via
+        // "Trade from Signal", or by AI Auto-Trade) — blank/0 means off. Mirrors dashboard.js's
+        // identical spot cell.
+        const trailingInput = el('input', { type: 'number', step: 'any', min: '0', max: '100', placeholder: 'off' });
+        if (asset.trailing_percent != null) trailingInput.value = String(asset.trailing_percent);
+        trailingInput.title = 'Trailing-stop % this asset\'s positions use by default (manual "Trade from Signal" and AI Auto-Trade). Leave blank to trade with a fixed stop-loss instead.';
+        trailingInput.addEventListener('change', async () => {
+          const value = trailingInput.value ? Number(trailingInput.value) : null;
+          try {
+            await Api.setFuturesTrailingPercent(mode, asset.symbol, asset.exchange, value);
+            toast(value ? `Trailing stop set to ${value}% for ${asset.symbol}.` : `Trailing stop disabled for ${asset.symbol}.`, 'success');
+          } catch (err) {
+            trailingInput.value = asset.trailing_percent != null ? String(asset.trailing_percent) : '';
+            toast(`Failed to update trailing stop: ${err.message}`, 'error');
+          }
+        });
+        const trailingCell = el('td');
+        trailingCell.appendChild(trailingInput);
+        row.appendChild(trailingCell);
 
         const autoSelectCheckbox = el('input', { type: 'checkbox' });
         autoSelectCheckbox.checked = asset.strategy_mode === 'auto';
@@ -494,7 +661,7 @@ const Futures = (() => {
       return;
     }
     try {
-      await Api.addFuturesAsset(mode, { symbol, exchange: EXCHANGE, leverage: 3 });
+      await Api.addFuturesAsset(mode, { symbol, exchange: getCurrentExchange(), leverage: 3 });
       toast(`${symbol} added to your ${mode === 'real' ? 'Real' : 'Demo'} Futures Signals Setting.`, 'success');
       await refreshWatchlist(mode);
     } catch (err) {
@@ -550,6 +717,7 @@ const Futures = (() => {
     document.getElementById('futures-real-pnl-card').hidden = !unlocked;
     document.getElementById('futures-real-order-card').hidden = !unlocked;
     document.getElementById('futures-real-orders-card').hidden = !unlocked;
+    document.getElementById('futures-real-trade-history-card').hidden = !unlocked;
     document.getElementById('futures-real-watchlist-locked-hint').hidden = unlocked;
     document.getElementById('futures-real-watchlist-panel').hidden = !unlocked;
     document.getElementById('futures-add-real-watchlist-btn').hidden = !unlocked;
@@ -563,7 +731,7 @@ const Futures = (() => {
 
   async function loadStrategyOptions() {
     try {
-      strategiesCache = await Api.listStrategies();
+      strategiesCache = await Api.listStrategies('futures'); // includes Liquidity Sweep Reversal — futures-only, see api.js
     } catch {
       strategiesCache = [];
     }
@@ -589,6 +757,8 @@ const Futures = (() => {
       updateCurrentSymbolLabels();
     });
 
+    document.getElementById('futures-exchange-input').addEventListener('change', refreshSymbolSuggestions);
+
     document.getElementById('futures-add-demo-watchlist-btn').addEventListener('click', () => addCurrentSymbolToWatchlist('demo'));
     document.getElementById('futures-add-real-watchlist-btn').addEventListener('click', () => addCurrentSymbolToWatchlist('real'));
     document.getElementById('futures-demo-enable-all-autotrade-btn').addEventListener('click', enableAutoTradeForAll);
@@ -599,7 +769,7 @@ const Futures = (() => {
     ModeSwitcher.onRealUnlock(updateRealPanelVisibility);
 
     loadStrategyOptions().then(() => refreshWatchlist('demo'));
-    refreshSymbolSuggestions();
+    loadFuturesExchangeOptions().then(refreshSymbolSuggestions);
     updateCurrentSymbolLabels();
     refreshPortfolio('demo');
     updateRealPanelVisibility();

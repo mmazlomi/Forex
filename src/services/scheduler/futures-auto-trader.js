@@ -7,6 +7,8 @@ const signalsService = require('../signals');
 const { placeDemoFuturesOrder } = require('../orders/futures-demo-orders');
 const { placeRealFuturesOrder } = require('../orders/futures-real-orders');
 const { resolveRealCredentials } = require('../exchanges/real-credentials-resolver');
+const exchangeClientFactory = require('../exchanges/exchange-client-factory');
+const { STRATEGY_ID: LSR_STRATEGY_ID } = require('../backtesting/reversal-backtest-engine');
 const logger = require('../logging/logger');
 const config = require('../../../config/config');
 
@@ -34,17 +36,18 @@ function realAutoTradeGloballyAllowed() {
 }
 
 /**
- * Resolves (and memoizes, per cycle) whether this user has usable real KuCoin futures
- * credentials configured. Returns the credentials object if so, or null if not — null is a
- * normal, expected outcome (most users on a shared instance won't have configured Real trading),
- * not an error. This cache is a cycle-level short-circuit only: placeRealFuturesOrder
- * independently re-resolves and re-validates credentials itself before ever calling the exchange,
- * so a stale or wrong cache entry can never itself cause a real order to be placed.
+ * Resolves (and memoizes, per cycle) whether this user has usable real futures-capable
+ * credentials configured (see exchange-client-factory.js's FUTURES_EXCHANGES for which exchanges
+ * qualify). Returns the credentials object if so, or null if not — null is a normal, expected
+ * outcome (most users on a shared instance won't have configured Real trading), not an error.
+ * This cache is a cycle-level short-circuit only: placeRealFuturesOrder independently re-resolves
+ * and re-validates credentials itself before ever calling the exchange, so a stale or wrong cache
+ * entry can never itself cause a real order to be placed.
  */
 function resolveRealCredentialsForUser(userId, cache) {
   if (cache.has(userId)) return cache.get(userId);
   const credentials = resolveRealCredentials(userId);
-  const usable = !!(credentials.name && credentials.apiKey && credentials.apiSecret && credentials.name.toLowerCase() === 'kucoin')
+  const usable = !!(credentials.name && credentials.apiKey && credentials.apiSecret && exchangeClientFactory.isFuturesExchangeSupported(credentials.name))
     ? credentials
     : null;
   cache.set(userId, usable);
@@ -69,6 +72,14 @@ async function processAsset(mode, asset, source, realCredCache) {
   const exchange = asset.exchange;
 
   try {
+    // Liquidity Sweep Reversal is a stateful, multi-timeframe sequence, not a per-candle weighted
+    // score — scoring it via generateSignal()/generateCombinedSignal() below would silently treat
+    // its strategy_id as an unknown STRATEGIES key and fall back to "balanced", producing signals
+    // that have nothing to do with the strategy the user actually selected. It's traded by its
+    // own scheduler (reversal-auto-trader.js) instead — see strategies.js's EXTENDED_STRATEGY_IDS
+    // comment for the full reasoning.
+    if (asset.strategy_id === LSR_STRATEGY_ID) return;
+
     // One user's missing/misconfigured credentials only ever skips THIS asset for THIS user —
     // it never blocks or affects any other user's assets in the same cycle. This is what makes
     // per-user real trading genuinely independent.
@@ -77,13 +88,18 @@ async function processAsset(mode, asset, source, realCredCache) {
       return;
     }
 
+    // assetType is always 'crypto' here — futures (KuCoin-only, §18) never lists stocks. Without
+    // this, getFundamentals() binds `undefined` for asset_type, which node:sqlite rejects; that
+    // gets swallowed as "fundamentals unavailable", and since every default strategy weights
+    // fundamentals > 0, computeSignal() then refuses to emit BUY/SELL and returns NO_DATA — this
+    // was silently forcing NO_DATA on every futures cycle for every symbol.
     const combinedStrategyIds = resolveCombinedStrategyIds(asset);
     const signal = combinedStrategyIds
       ? await signalsService.generateCombinedSignal({
-          symbol, exchange, timeframe: asset.default_timeframe || '1h', mode: 'demo', userId, strategyIds: combinedStrategyIds, market: 'futures',
+          symbol, exchange, timeframe: asset.default_timeframe || '1h', assetType: 'crypto', mode: 'demo', userId, strategyIds: combinedStrategyIds, market: 'futures',
         })
       : await signalsService.generateSignal({
-          symbol, exchange, timeframe: asset.default_timeframe || '1h', mode: 'demo', userId, strategyId: asset.strategy_id, market: 'futures',
+          symbol, exchange, timeframe: asset.default_timeframe || '1h', assetType: 'crypto', mode: 'demo', userId, strategyId: asset.strategy_id, market: 'futures',
         });
 
     const openPosition = futuresPositionsRepository.findOpenPositionBySymbol(mode, userId, symbol);
@@ -93,22 +109,35 @@ async function processAsset(mode, asset, source, realCredCache) {
     // (Demo has no leverage cap concept beyond what the asset itself specifies).
     const leverage = mode === 'real' ? Math.min(asset.leverage, config.futuresAutoTradeMaxLeverage) : asset.leverage;
 
-    if (signal.status === 'BUY' && !openPosition) {
+    async function openDirectional(action) {
       if (signal.stopLoss == null || signal.takeProfit == null) {
-        logger.warn('futures-auto-trader', `Skipped open_long for ${symbol}: signal had no stop/take-profit`, { userId }, mode);
+        logger.warn('futures-auto-trader', `Skipped ${action} for ${symbol}: signal had no stop/take-profit`, { userId }, mode);
         return;
       }
-      const orderArgs = { userId, symbol, exchange, action: 'open_long', leverage, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, signalId: signal.id, source };
+      const orderArgs = { userId, symbol, exchange, action, leverage, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, signalId: signal.id, source, trailingPercent: asset.trailing_percent };
       if (mode === 'real') orderArgs.unlockConfirmed = true; // no human present per-trade; gated by realAutoTradeGloballyAllowed() + list membership + per-user credentials instead
       const order = await placeOrder(orderArgs);
-      logger.info('futures-auto-trader', `AI futures auto-trade open_long ${order.status} for ${symbol}`, { mode, userId, orderId: order.id, leverage, rejectReason: order.reject_reason }, mode);
-    } else if (signal.status === 'SELL' && openPosition) {
+      logger.info('futures-auto-trader', `AI futures auto-trade ${action} ${order.status} for ${symbol}`, { mode, userId, orderId: order.id, leverage, rejectReason: order.reject_reason }, mode);
+    }
+
+    async function closeExisting() {
       const orderArgs = { userId, symbol, exchange, action: 'close', signalId: signal.id, source };
       if (mode === 'real') orderArgs.unlockConfirmed = true;
       const order = await placeOrder(orderArgs);
       logger.info('futures-auto-trader', `AI futures auto-trade close ${order.status} for ${symbol}`, { mode, userId, orderId: order.id, rejectReason: order.reject_reason }, mode);
     }
-    // HOLD, NO_DATA, a BUY while already positioned, or a SELL with nothing open: no action.
+
+    // One-way mode (one net position per symbol — §18): a BUY closes an opposing short and opens a
+    // fresh long when flat; a SELL closes an opposing long and opens a fresh short when flat. A
+    // signal that agrees with the already-open side is left alone (no re-open, no flip-and-reopen).
+    if (signal.status === 'BUY') {
+      if (!openPosition) await openDirectional('open_long');
+      else if (openPosition.side === 'short') await closeExisting();
+    } else if (signal.status === 'SELL') {
+      if (!openPosition) await openDirectional('open_short');
+      else if (openPosition.side === 'long') await closeExisting();
+    }
+    // HOLD or NO_DATA: no action.
   } catch (err) {
     logger.error('futures-auto-trader', `Futures auto-trade cycle failed for ${symbol}@${exchange} (${mode}, user ${userId}): ${err.message}`, {}, mode);
   }

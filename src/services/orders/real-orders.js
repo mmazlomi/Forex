@@ -104,7 +104,7 @@ function effectivePriceFor(orderType, limitPrice, triggerPrice) {
  * re-read from config on every call rather than cached at boot. There is no fallback path to
  * demo-orders.js: a rejection here is a rejection, never a silent simulated fill.
  */
-async function placeRealOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, orderType, limitPrice, triggerPrice }) {
+async function placeRealOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, orderType, limitPrice, triggerPrice, strategyId, timeframe, trailingPercent }) {
   const id = uuidv4();
   side = side.toLowerCase();
   orderType = (orderType || 'market').toLowerCase();
@@ -236,7 +236,7 @@ async function placeRealOrder({ userId, symbol, exchange, side, stopLoss, takePr
     responseJson: JSON.stringify(exchangeResponse),
   });
 
-  const position = portfolioService.openPosition(MODE, userId, { symbol, exchange, side: 'buy', qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit });
+  const position = portfolioService.openPosition(MODE, userId, { symbol, exchange, side: 'buy', qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, signalId, strategyId, timeframe, trailingPercent });
 
   const order = ordersRepository.insertOrder(MODE, userId, {
     id,
@@ -446,6 +446,7 @@ function finalizeRealBuyFill(order, fillPrice, exchangeResponse) {
   const position = portfolioService.openPosition(MODE, userId, {
     symbol: order.symbol, exchange: order.exchange ?? null, side: 'buy',
     qty: order.qty, entryPrice: fillPrice, stopLoss: order.stop_loss, takeProfit: order.take_profit,
+    signalId: order.signal_id,
   });
   realAuditLogRepository.insertAuditEntry({ userId, orderId: order.id, requestJson: JSON.stringify({ fetchOrderConfirmedFill: true }), responseJson: JSON.stringify(exchangeResponse) });
   const updated = ordersRepository.updateOrderStatus(MODE, userId, order.id, { status: 'filled', filledAtUtc: new Date().toISOString(), exchangeOrderId: order.exchange_order_id, price: fillPrice });

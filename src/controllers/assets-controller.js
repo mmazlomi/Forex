@@ -4,7 +4,7 @@ const assetsRepository = require('../database/repositories/assets-repository');
 const exchangeClientFactory = require('../services/exchanges/exchange-client-factory');
 const { withRetry } = require('../utils/retry');
 const config = require('../../config/config');
-const { getStrategy } = require('../services/signals/strategies');
+const { resolveStrategyId } = require('../services/signals/strategies');
 const { SUPPORTED_TIMEFRAMES } = require('../services/market-data/market-data-service');
 const { sendSuccess, sendError } = require('../utils/http-response');
 
@@ -37,9 +37,11 @@ async function addAsset(req, res) {
     return sendError(res, 'VALIDATION_ERROR', `Asset "${symbol}" on "${exchange}" is already on your watchlist.`, 409);
   }
 
-  // getStrategy() falls back to the default for an unknown id, so this always resolves to a
-  // real strategy id rather than storing something invalid.
-  const resolvedStrategyId = getStrategy(strategyId).id;
+  // resolveStrategyId() falls back to the default for an unknown id, so this always resolves to
+  // a real strategy id rather than storing something invalid — see strategies.js's comment on why
+  // this (not getStrategy().id) is the right resolver for storage: it also recognizes Liquidity
+  // Sweep Reversal, which getStrategy() would otherwise silently coerce to "balanced".
+  const resolvedStrategyId = resolveStrategyId(strategyId);
   const asset = assetsRepository.addAsset(req.user.id, { symbol, exchange, market, assetType, defaultTimeframe, strategyId: resolvedStrategyId });
   sendSuccess(res, asset, 'Asset added.', 201);
 }
@@ -74,6 +76,29 @@ async function setAutoTrade(req, res) {
   sendSuccess(res, asset, `AI auto-trading ${enabled ? 'enabled' : 'disabled'} for ${symbol}.`);
 }
 
+// A separate, explicit real-money opt-in from setAutoTrade above (which the generic Demo-only
+// auto-trader.js reads) — currently only actually acted on by reversal-spot-auto-trader.js for
+// Liquidity Sweep Reversal-tagged assets. See assets-repository.js#setRealAutoTrade's comment.
+async function setRealAutoTrade(req, res) {
+  const { symbol } = req.params;
+  const { exchange } = req.query;
+  const { enabled } = req.body || {};
+  if (!exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
+  }
+  if (typeof enabled !== 'boolean') {
+    return sendError(res, 'VALIDATION_ERROR', 'enabled (boolean) is required in the request body.');
+  }
+  const asset = assetsRepository.setRealAutoTrade(req.user.id, symbol, exchange, enabled);
+  if (!asset) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
+  }
+  const note = enabled && !config.enableSpotAutoTrading
+    ? ' (Note: the server has not enabled ENABLE_SPOT_AUTO_TRADING, so this will not actually place real trades yet.)'
+    : '';
+  sendSuccess(res, asset, `Real AI auto-trading ${enabled ? 'enabled' : 'disabled'} for ${symbol}.${note}`);
+}
+
 async function setStrategy(req, res) {
   const { symbol } = req.params;
   const { exchange } = req.query;
@@ -84,7 +109,7 @@ async function setStrategy(req, res) {
   if (!strategyId) {
     return sendError(res, 'VALIDATION_ERROR', 'strategyId is required in the request body.');
   }
-  const resolvedStrategyId = getStrategy(strategyId).id;
+  const resolvedStrategyId = resolveStrategyId(strategyId);
   const asset = assetsRepository.setStrategy(req.user.id, symbol, exchange, resolvedStrategyId);
   if (!asset) {
     return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
@@ -109,6 +134,27 @@ async function setTimeframe(req, res) {
     return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
   }
   sendSuccess(res, asset, `Timeframe set to "${defaultTimeframe}" for ${symbol}.`);
+}
+
+// The default trailing-stop distance (percent of price) a position inherits when opened from this
+// asset — manually via "Trade from Signal", or by AI Auto-Trade — unless the order itself
+// overrides it. null clears it (trailing off). Positions already open are never retroactively
+// changed by this — it only affects positions opened after the setting is saved.
+async function setTrailingPercent(req, res) {
+  const { symbol } = req.params;
+  const { exchange } = req.query;
+  const { trailingPercent } = req.body || {};
+  if (!exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
+  }
+  if (trailingPercent !== null && !(typeof trailingPercent === 'number' && trailingPercent > 0 && trailingPercent < 100)) {
+    return sendError(res, 'VALIDATION_ERROR', 'trailingPercent must be a number between 0 and 100 (exclusive), or null to disable.');
+  }
+  const asset = assetsRepository.setTrailingPercent(req.user.id, symbol, exchange, trailingPercent);
+  if (!asset) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
+  }
+  sendSuccess(res, asset, trailingPercent ? `Trailing stop set to ${trailingPercent}% for ${symbol}.` : `Trailing stop disabled for ${symbol}.`);
 }
 
 // Moves a watchlist entry to a different exchange without removing/re-adding it — same crypto
@@ -171,4 +217,4 @@ async function setStrategyMode(req, res) {
   sendSuccess(res, asset, `Strategy mode set to "${mode}" for ${symbol}.`);
 }
 
-module.exports = { listAssets, addAsset, removeAsset, setAutoTrade, setStrategy, setTimeframe, setExchange, setStrategyMode };
+module.exports = { listAssets, addAsset, removeAsset, setAutoTrade, setRealAutoTrade, setStrategy, setTimeframe, setExchange, setStrategyMode, setTrailingPercent };

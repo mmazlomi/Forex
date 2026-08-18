@@ -59,7 +59,7 @@ const PENDING_ORDER_TYPES = ['limit', 'stop_market', 'stop_limit'];
  * of two), not an oversight — worst case it adds one poll interval (default 30s) of latency to an
  * order that would've filled instantly on a real exchange.
  */
-async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, orderType, limitPrice, triggerPrice }) {
+async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, orderType, limitPrice, triggerPrice, strategyId, timeframe, trailingPercent }) {
   const id = uuidv4();
   side = side.toLowerCase();
   orderType = (orderType || 'market').toLowerCase();
@@ -155,7 +155,7 @@ async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takePr
     return persistRejected({ id, userId, symbol, side, stopLoss, takeProfit, price, reasonCode: validation.reasonCode, message: validation.message, idempotencyKey, signalId });
   }
 
-  const position = portfolioService.openPosition(MODE, userId, { symbol, exchange, side: 'buy', qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit });
+  const position = portfolioService.openPosition(MODE, userId, { symbol, exchange, side: 'buy', qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, signalId, strategyId, timeframe, trailingPercent });
 
   const order = ordersRepository.insertOrder(MODE, userId, {
     id,
@@ -322,6 +322,7 @@ function finalizeDemoBuyFill(order, fillPrice) {
   const position = portfolioService.openPosition(MODE, userId, {
     symbol: order.symbol, exchange: order.exchange ?? null, side: 'buy',
     qty: order.qty, entryPrice: fillPrice, stopLoss: order.stop_loss, takeProfit: order.take_profit,
+    signalId: order.signal_id,
   });
   const updated = ordersRepository.updateOrderStatus(MODE, userId, order.id, { status: 'filled', filledAtUtc: new Date().toISOString(), price: fillPrice });
   logger.info('demo-orders', `Demo ${order.order_type} BUY filled for ${order.symbol}`, { qty: order.qty, fillPrice, positionId: position.id }, MODE);

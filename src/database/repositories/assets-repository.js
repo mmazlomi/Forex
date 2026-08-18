@@ -51,6 +51,24 @@ function listAutoTradeEnabled() {
   return db.prepare('SELECT * FROM assets WHERE auto_trade_enabled = 1').all();
 }
 
+// A separate, explicit opt-in from auto_trade_enabled above — see schema.js's
+// migrateAddRealAutoTradeColumn comment for why spot has two flags on one shared table instead of
+// futures' fully-split demo/real tables. Currently only read by reversal-spot-auto-trader.js.
+function setRealAutoTrade(userId, symbol, exchange, enabled) {
+  const db = getDb();
+  const result = db
+    .prepare('UPDATE assets SET real_auto_trade_enabled = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
+    .run(enabled ? 1 : 0, userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(userId, symbol, exchange);
+}
+
+// Same "one shared scheduler, not scoped by user_id" reasoning as listAutoTradeEnabled() above.
+function listRealAutoTradeEnabled() {
+  const db = getDb();
+  return db.prepare('SELECT * FROM assets WHERE real_auto_trade_enabled = 1').all();
+}
+
 function setStrategy(userId, symbol, exchange, strategyId) {
   const db = getDb();
   const result = db
@@ -69,6 +87,19 @@ function setTimeframe(userId, symbol, exchange, defaultTimeframe) {
   const result = db
     .prepare('UPDATE assets SET default_timeframe = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
     .run(defaultTimeframe, userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(userId, symbol, exchange);
+}
+
+// Per-asset default trailing-stop distance (percent of price), inherited by a position opened
+// from this asset (manually via "Trade from Signal", or by AI Auto-Trade) unless the order itself
+// explicitly overrides it. Null (the default) means trailing is off — same "absence = off"
+// convention as every other opt-in flag on this table.
+function setTrailingPercent(userId, symbol, exchange, trailingPercent) {
+  const db = getDb();
+  const result = db
+    .prepare('UPDATE assets SET trailing_percent = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
+    .run(trailingPercent, userId, symbol, exchange);
   if (result.changes === 0) return null;
   return getAsset(userId, symbol, exchange);
 }
@@ -135,5 +166,5 @@ function listAutoStrategyModeAssets() {
 module.exports = {
   listAssets, getAsset, addAsset, removeAsset, setAutoTrade, listAutoTradeEnabled, setStrategy, setTimeframe,
   setExchange, setStrategyMode, setSelectedStrategies, listAutoStrategyModeAssets,
-  claimOrphanedAssets,
+  claimOrphanedAssets, setRealAutoTrade, listRealAutoTradeEnabled, setTrailingPercent,
 };

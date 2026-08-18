@@ -59,14 +59,35 @@ const Api = (() => {
     addAsset: (body) => request('POST', 'api/assets', { body }),
     removeAsset: (symbol, exchange) => request('DELETE', `api/assets/${encodeURIComponent(symbol)}`, { query: { exchange } }),
     setAutoTrade: (symbol, exchange, enabled) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/auto-trade`, { query: { exchange }, body: { enabled } }),
+    // Currently only acted on for Liquidity Sweep Reversal-strategy assets (real-money spot
+    // auto-trading, gated by ENABLE_SPOT_AUTO_TRADING + real credentials) — see reversal-spot-auto-trader.js.
+    setRealAutoTrade: (symbol, exchange, enabled) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/real-auto-trade`, { query: { exchange }, body: { enabled } }),
     listExchanges: () => request('GET', 'api/exchanges'),
     listSymbolsForExchange: (exchange) => request('GET', 'api/exchanges/symbols', { query: { exchange } }),
     setAssetStrategy: (symbol, exchange, strategyId) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/strategy`, { query: { exchange }, body: { strategyId } }),
     setAssetTimeframe: (symbol, exchange, defaultTimeframe) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/timeframe`, { query: { exchange }, body: { defaultTimeframe } }),
     setAssetExchange: (symbol, exchange, newExchange) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/exchange`, { query: { exchange }, body: { newExchange } }),
     setAssetStrategyMode: (symbol, exchange, mode) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/strategy-mode`, { query: { exchange }, body: { mode } }),
+    // trailingPercent: number to set, or null to disable — the default a position opened from
+    // this asset (manually or by AI Auto-Trade) inherits unless the order itself overrides it.
+    setAssetTrailingPercent: (symbol, exchange, trailingPercent) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/trailing`, { query: { exchange }, body: { trailingPercent } }),
 
-    listStrategies: () => request('GET', 'api/strategies'),
+    // The lightweight WatchList — separate from the assets/futures-assets Signals Setting lists
+    // above. "Promote" is the one-click "Add to Signals Setting" action: it adds the symbol to
+    // Spot Signals Setting plus both Demo and Real Futures Signals Setting in one call.
+    listWatchlist: () => request('GET', 'api/watchlist'),
+    addToWatchlist: (body) => request('POST', 'api/watchlist', { body }),
+    removeFromWatchlist: (symbol, exchange) => request('DELETE', `api/watchlist/${encodeURIComponent(symbol)}`, { query: { exchange } }),
+    promoteWatchlistItem: (symbol, exchange) => request('POST', `api/watchlist/${encodeURIComponent(symbol)}/promote`, { query: { exchange } }),
+
+    // market: omit for the spot-only list (unchanged); pass 'futures' to also include Liquidity
+    // Sweep Reversal — see signals-controller.js#getStrategies (LSR needs a short-capable market,
+    // which spot isn't).
+    listStrategies: (market) => request('GET', 'api/strategies', { query: { market } }),
+
+    // Read-only live status of a Liquidity Sweep Reversal asset's state machine (which step of
+    // Sweep -> Divergence -> CHOCH -> Retest -> Entry it's currently on) — see reversal-controller.js.
+    getReversalStatus: (symbol, exchange, market, mode) => request('GET', 'api/reversal/status', { query: { symbol, exchange, market, mode } }),
 
     getMarketData: (symbol, exchange, market) => request('GET', 'api/market-data', { query: { symbol, exchange, market } }),
     getCandles: (symbol, exchange, timeframe, limit) => request('GET', 'api/candles', { query: { symbol, exchange, timeframe, limit } }),
@@ -78,6 +99,7 @@ const Api = (() => {
     analyzeSignal: (body) => request('POST', 'api/signals/analyze', { body }),
 
     getPortfolio: (mode) => request('GET', 'api/portfolio', { query: { mode } }),
+    getTradeHistory: (mode, limit) => request('GET', 'api/portfolio/history', { query: { mode, limit } }),
     syncRealBalance: (symbol, exchange) => request('POST', 'api/portfolio/real/sync-balance', { body: { symbol, exchange } }),
     listOrders: (mode, limit, status) => request('GET', 'api/orders', { query: { mode, limit, status } }),
     placeDemoOrder: (body) => request('POST', 'api/orders/demo', { body }),
@@ -100,10 +122,13 @@ const Api = (() => {
     getLogs: (limit) => request('GET', 'api/logs', { query: { limit } }),
     getSystemStatus: () => request('GET', 'api/system-status'),
 
-    // Phase 2 (Futures, KuCoin-only) — a fully separate set of endpoints from Spot's above,
-    // matching the backend's "separate everything" design (own tables, own services, own routes).
+    // Phase 2 (Futures) — a fully separate set of endpoints from Spot's above, matching the
+    // backend's "separate everything" design (own tables, own services, own routes). Multiple
+    // exchanges (KuCoin, CoinEx) supported — see listFuturesExchanges.
+    listFuturesExchanges: () => request('GET', 'api/futures/exchanges'),
     listFuturesSymbols: (exchange = 'kucoin') => request('GET', 'api/futures/symbols', { query: { exchange } }),
     getFuturesPortfolio: (mode) => request('GET', 'api/futures/portfolio', { query: { mode } }),
+    getFuturesTradeHistory: (mode, limit) => request('GET', 'api/futures/history', { query: { mode, limit } }),
     listFuturesOrders: (mode, limit, status) => request('GET', 'api/futures/orders', { query: { mode, limit, status } }),
     placeDemoFuturesOrder: (body) => request('POST', 'api/futures/orders/demo', { body }),
     placeRealFuturesOrder: (body) => request('POST', 'api/futures/orders/real', { body }),
@@ -117,9 +142,11 @@ const Api = (() => {
     removeFuturesAsset: (mode, symbol, exchange = 'kucoin') => request('DELETE', `api/futures/assets/${encodeURIComponent(symbol)}`, { query: { mode, exchange } }),
     setFuturesAutoTrade: (mode, symbol, exchange, enabled) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/auto-trade`, { query: { mode, exchange }, body: { enabled } }),
     setFuturesLeverage: (mode, symbol, exchange, leverage) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/leverage`, { query: { mode, exchange }, body: { leverage } }),
+    setFuturesExchange: (mode, symbol, exchange, newExchange) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/exchange`, { query: { mode, exchange }, body: { newExchange } }),
     setFuturesStrategy: (mode, symbol, exchange, strategyId) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/strategy`, { query: { mode, exchange }, body: { strategyId } }),
     setFuturesTimeframe: (mode, symbol, exchange, defaultTimeframe) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/timeframe`, { query: { mode, exchange }, body: { defaultTimeframe } }),
     setFuturesStrategyMode: (mode, symbol, exchange, strategyMode) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/strategy-mode`, { query: { mode, exchange }, body: { mode: strategyMode } }),
+    setFuturesTrailingPercent: (mode, symbol, exchange, trailingPercent) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/trailing`, { query: { mode, exchange }, body: { trailingPercent } }),
 
     getFuturesRiskSettings: (mode) => request('GET', 'api/futures/risk-settings', { query: { mode } }),
     updateFuturesRiskSettings: (mode, body) => request('PUT', 'api/futures/risk-settings', { query: { mode }, body }),

@@ -287,3 +287,53 @@ test('processAsset uses the single-strategy generateSignal for an ordinary "manu
   assert.equal(singleMock.mock.callCount(), 1);
   assert.equal(combinedMock.mock.callCount(), 0);
 });
+
+// A SELL signal with nothing open used to be a silent no-op (long-only auto-trading, even though
+// open_short is fully supported at the order layer — see docs/architecture.md §18). This proves
+// the fix: SELL now opens a short exactly the way BUY opens a long.
+test('runCycle: a SELL signal with no open position opens a short (not a silent no-op)', async (t) => {
+  mockPrice(t);
+  futuresAssetsRepository.addAsset('demo', testUserId, { symbol: 'BTC/USDT:USDT', exchange: 'kucoin', leverage: 5 });
+  futuresAssetsRepository.setAutoTrade('demo', testUserId, 'BTC/USDT:USDT', 'kucoin', true);
+  t.mock.method(signalsService, 'generateSignal', async () => baseSignal({ status: 'SELL', entry: 60000, stopLoss: 70000, takeProfit: 40000 }));
+
+  await futuresAutoTrader.runCycle();
+
+  const demoOrders = futuresOrdersRepository.listOrders('demo', testUserId, {});
+  assert.equal(demoOrders.length, 1);
+  assert.equal(demoOrders[0].status, 'filled');
+  assert.equal(demoOrders[0].action, 'open_short');
+  const position = futuresPositionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT:USDT');
+  assert.ok(position);
+  assert.equal(position.side, 'short');
+});
+
+test('runCycle: a SELL signal while already short is left alone — no duplicate open, no close', async (t) => {
+  mockPrice(t);
+  futuresAssetsRepository.addAsset('demo', testUserId, { symbol: 'BTC/USDT:USDT', exchange: 'kucoin', leverage: 5 });
+  futuresAssetsRepository.setAutoTrade('demo', testUserId, 'BTC/USDT:USDT', 'kucoin', true);
+  t.mock.method(signalsService, 'generateSignal', async () => baseSignal({ status: 'SELL', entry: 60000, stopLoss: 70000, takeProfit: 40000 }));
+
+  await futuresAutoTrader.runCycle(); // opens the short
+  await futuresAutoTrader.runCycle(); // should be a no-op, not a second order
+
+  assert.equal(futuresOrdersRepository.listOrders('demo', testUserId, {}).length, 1);
+});
+
+test('runCycle: a BUY signal while an opposing short is open closes it (does not attempt to open a long into it)', async (t) => {
+  mockPrice(t);
+  futuresAssetsRepository.addAsset('demo', testUserId, { symbol: 'BTC/USDT:USDT', exchange: 'kucoin', leverage: 5 });
+  futuresAssetsRepository.setAutoTrade('demo', testUserId, 'BTC/USDT:USDT', 'kucoin', true);
+
+  t.mock.method(signalsService, 'generateSignal', async () => baseSignal({ status: 'SELL', entry: 60000, stopLoss: 70000, takeProfit: 40000 }));
+  await futuresAutoTrader.runCycle(); // opens the short
+  assert.equal(futuresPositionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT:USDT').side, 'short');
+
+  t.mock.method(signalsService, 'generateSignal', async () => baseSignal({ status: 'BUY', entry: 60000, stopLoss: 50000, takeProfit: 80000 }));
+  await futuresAutoTrader.runCycle(); // should close the short, not reject with POSITION_ALREADY_OPEN
+
+  assert.equal(futuresPositionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT:USDT'), undefined);
+  const orders = futuresOrdersRepository.listOrders('demo', testUserId, {});
+  assert.equal(orders.length, 2);
+  assert.equal(orders[0].action, 'close');
+});

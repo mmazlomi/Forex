@@ -3,22 +3,34 @@
 const futuresAssetsRepository = require('../database/repositories/futures-assets-repository');
 const futuresOrdersRepository = require('../database/repositories/futures-orders-repository');
 const futuresRiskSettingsRepository = require('../database/repositories/futures-risk-settings-repository');
+const futuresPositionsRepository = require('../database/repositories/futures-positions-repository');
 const futuresPortfolioService = require('../services/portfolio/futures-portfolio-service');
 const { placeDemoFuturesOrder } = require('../services/orders/futures-demo-orders');
 const { placeRealFuturesOrder } = require('../services/orders/futures-real-orders');
 const { getFuturesSymbolsForExchange } = require('../services/market-data/symbol-list-service');
-const { getStrategy } = require('../services/signals/strategies');
+const { resolveStrategyId, describeStrategyIds } = require('../services/signals/strategies');
+const { resolvePositionStrategy } = require('../services/signals/resolve-position-strategy');
 const { SUPPORTED_TIMEFRAMES } = require('../services/market-data/market-data-service');
+const exchangeClientFactory = require('../services/exchanges/exchange-client-factory');
+const { withRetry } = require('../utils/retry');
 const config = require('../../config/config');
 const logger = require('../services/logging/logger');
 const { sendSuccess, sendError, sendRejection } = require('../utils/http-response');
 
 const REQUIRED_CONFIRMATION_TEXT = 'CONFIRM';
 
+function unsupportedFuturesExchangeMessage(exchange) {
+  return `Futures trading is not supported on "${exchange}" in this app. Supported exchanges: ${exchangeClientFactory.getSupportedFuturesExchanges().map((e) => e.id).join(', ')}.`;
+}
+
+async function listFuturesExchanges(req, res) {
+  sendSuccess(res, exchangeClientFactory.getSupportedFuturesExchanges());
+}
+
 async function listSymbols(req, res) {
   const exchange = (req.query.exchange || 'kucoin').toLowerCase();
-  if (exchange !== 'kucoin') {
-    return sendError(res, 'VALIDATION_ERROR', 'Futures trading is only supported on KuCoin in this app.');
+  if (!exchangeClientFactory.isFuturesExchangeSupported(exchange)) {
+    return sendError(res, 'VALIDATION_ERROR', unsupportedFuturesExchangeMessage(exchange));
   }
   const symbols = await getFuturesSymbolsForExchange(exchange);
   sendSuccess(res, symbols);
@@ -39,17 +51,48 @@ async function getPortfolio(req, res) {
   });
 }
 
+// Complete round-trip trade history — every CLOSED futures position for this user/mode, most
+// recent first, enriched with human-readable strategy name(s) exactly like Open Positions
+// already are — see portfolio-controller.js#getTradeHistory's identical spot version.
+async function getTradeHistory(req, res) {
+  const mode = req.tradingMode;
+  const userId = req.user.id;
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const closedPositions = futuresPositionsRepository.listClosedPositions(mode, userId, { limit });
+  const trades = closedPositions.map((position) => ({
+    ...position,
+    strategies: describeStrategyIds(position.strategy_id, position.combined_strategy_ids_json),
+  }));
+  sendSuccess(res, trades);
+}
+
+// Same resolve-from-signal_id enrichment as orders-controller.js's spot listOrders — futures
+// orders never denormalized strategy/timeframe onto themselves either, only the signal_id that
+// (for an order placed off an analyzed/auto-traded signal) resolves to one via the signals table.
+function enrichOrderWithStrategy(order) {
+  const resolved = resolvePositionStrategy(order.signal_id);
+  return {
+    ...order,
+    strategies: describeStrategyIds(resolved.strategyId, resolved.combinedStrategyIdsJson),
+    timeframe: resolved.timeframe,
+  };
+}
+
 async function listOrders(req, res) {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const offset = Number(req.query.offset) || 0;
   const { status } = req.query;
-  sendSuccess(res, futuresOrdersRepository.listOrders(req.tradingMode, req.user.id, { limit, offset, status }));
+  const orders = futuresOrdersRepository.listOrders(req.tradingMode, req.user.id, { limit, offset, status });
+  sendSuccess(res, orders.map(enrichOrderWithStrategy));
 }
 
 function validateOrderBody(body) {
-  const { symbol, action } = body || {};
+  const { symbol, action, trailingPercent } = body || {};
   if (!symbol || !['open_long', 'open_short', 'close'].includes(action)) {
     return 'symbol and action ("open_long", "open_short", or "close") are required.';
+  }
+  if (trailingPercent !== undefined && trailingPercent !== null && !(typeof trailingPercent === 'number' && trailingPercent > 0 && trailingPercent < 100)) {
+    return 'trailingPercent must be a number between 0 and 100 (exclusive) if provided.';
   }
   return null;
 }
@@ -58,8 +101,8 @@ async function postDemoOrder(req, res) {
   const validationError = validateOrderBody(req.body);
   if (validationError) return sendError(res, 'VALIDATION_ERROR', validationError);
 
-  const { symbol, exchange, action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId } = req.body;
-  const order = await placeDemoFuturesOrder({ userId: req.user.id, symbol, exchange, action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId });
+  const { symbol, exchange, action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, trailingPercent } = req.body;
+  const order = await placeDemoFuturesOrder({ userId: req.user.id, symbol, exchange, action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, trailingPercent });
   if (order.status === 'rejected') return sendRejection(res, order);
   sendSuccess(res, order, `Demo futures ${action} filled.`, 201);
 }
@@ -68,10 +111,10 @@ async function postRealOrder(req, res) {
   const validationError = validateOrderBody(req.body);
   if (validationError) return sendError(res, 'VALIDATION_ERROR', validationError);
 
-  const { symbol, exchange, action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, confirmationText } = req.body;
+  const { symbol, exchange, action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, confirmationText, trailingPercent } = req.body;
   const unlockConfirmed = confirmationText === REQUIRED_CONFIRMATION_TEXT;
 
-  const order = await placeRealFuturesOrder({ userId: req.user.id, symbol, exchange, action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed });
+  const order = await placeRealFuturesOrder({ userId: req.user.id, symbol, exchange, action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, trailingPercent });
   if (order.status === 'rejected') return sendRejection(res, order);
   sendSuccess(res, order, `Real futures ${action} filled.`, 201);
 }
@@ -91,13 +134,13 @@ async function addAsset(req, res) {
   if (!symbol) {
     return sendError(res, 'VALIDATION_ERROR', 'symbol is required.');
   }
-  if (exchange.toLowerCase() !== 'kucoin') {
-    return sendError(res, 'VALIDATION_ERROR', 'Futures trading is only supported on KuCoin in this app.');
+  if (!exchangeClientFactory.isFuturesExchangeSupported(exchange)) {
+    return sendError(res, 'VALIDATION_ERROR', unsupportedFuturesExchangeMessage(exchange));
   }
   if (futuresAssetsRepository.getAsset(req.tradingMode, req.user.id, symbol, exchange)) {
     return sendError(res, 'VALIDATION_ERROR', `Futures asset "${symbol}" is already on your ${req.tradingMode} watchlist.`, 409);
   }
-  const resolvedStrategyId = getStrategy(strategyId).id;
+  const resolvedStrategyId = resolveStrategyId(strategyId);
   const asset = futuresAssetsRepository.addAsset(req.tradingMode, req.user.id, { symbol, exchange, leverage, strategyId: resolvedStrategyId, defaultTimeframe });
   sendSuccess(res, asset, `Futures asset added to your ${req.tradingMode} watchlist.`, 201);
 }
@@ -139,12 +182,53 @@ async function setLeverage(req, res) {
   sendSuccess(res, asset, `Leverage set to ${leverage}x for ${symbol}.`);
 }
 
+// Mirrors assets-controller.js#setExchange — moves a futures watchlist entry to a different
+// exchange without removing/re-adding it (leverage/strategy/auto-trade settings carry over
+// unchanged). Same crypto-market validation as addAsset (a symbol valid on one futures exchange
+// isn't guaranteed valid on another — e.g. contract naming differs) plus a check that the
+// destination (symbol, newExchange) pair isn't already on this watchlist, since
+// UNIQUE(user_id, symbol, exchange) would otherwise reject the UPDATE.
+async function setExchange(req, res) {
+  const { symbol } = req.params;
+  const { exchange } = req.query;
+  const { newExchange } = req.body || {};
+  if (!exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
+  }
+  if (!newExchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'newExchange is required in the request body.');
+  }
+  if (newExchange === exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'newExchange must differ from the current exchange.');
+  }
+  if (!exchangeClientFactory.isFuturesExchangeSupported(newExchange)) {
+    return sendError(res, 'VALIDATION_ERROR', unsupportedFuturesExchangeMessage(newExchange));
+  }
+
+  const asset = futuresAssetsRepository.getAsset(req.tradingMode, req.user.id, symbol, exchange);
+  if (!asset) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" on "${exchange}" was found on your ${req.tradingMode} watchlist.`, 404);
+  }
+  if (futuresAssetsRepository.getAsset(req.tradingMode, req.user.id, symbol, newExchange)) {
+    return sendError(res, 'VALIDATION_ERROR', `Futures asset "${symbol}" on "${newExchange}" is already on your ${req.tradingMode} watchlist.`, 409);
+  }
+
+  const client = exchangeClientFactory.getPublicFuturesExchange(newExchange);
+  await withRetry(() => client.loadMarkets(), { maxRetries: config.maxApiRetries });
+  if (!client.markets[symbol]) {
+    return sendError(res, 'VALIDATION_ERROR', `Symbol "${symbol}" was not found on futures exchange "${newExchange}".`);
+  }
+
+  const updated = futuresAssetsRepository.setExchange(req.tradingMode, req.user.id, symbol, exchange, newExchange);
+  sendSuccess(res, updated, `Exchange changed to "${newExchange}" for ${symbol}.`);
+}
+
 async function setStrategy(req, res) {
   const { symbol } = req.params;
   const exchange = req.query.exchange || 'kucoin';
   const { strategyId } = req.body || {};
   if (!strategyId) return sendError(res, 'VALIDATION_ERROR', 'strategyId is required in the request body.');
-  const resolvedStrategyId = getStrategy(strategyId).id;
+  const resolvedStrategyId = resolveStrategyId(strategyId);
   const asset = futuresAssetsRepository.setStrategy(req.tradingMode, req.user.id, symbol, exchange, resolvedStrategyId);
   if (!asset) return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" was found on your ${req.tradingMode} watchlist.`, 404);
   sendSuccess(res, asset, `Strategy set to "${resolvedStrategyId}" for ${symbol}.`);
@@ -162,6 +246,19 @@ async function setTimeframe(req, res) {
   const asset = futuresAssetsRepository.setTimeframe(req.tradingMode, req.user.id, symbol, exchange, defaultTimeframe);
   if (!asset) return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" was found on your ${req.tradingMode} watchlist.`, 404);
   sendSuccess(res, asset, `Timeframe set to "${defaultTimeframe}" for ${symbol}.`);
+}
+
+// Mirrors assets-controller.js#setTrailingPercent — see its comment.
+async function setTrailingPercent(req, res) {
+  const { symbol } = req.params;
+  const exchange = req.query.exchange || 'kucoin';
+  const { trailingPercent } = req.body || {};
+  if (trailingPercent !== null && !(typeof trailingPercent === 'number' && trailingPercent > 0 && trailingPercent < 100)) {
+    return sendError(res, 'VALIDATION_ERROR', 'trailingPercent must be a number between 0 and 100 (exclusive), or null to disable.');
+  }
+  const asset = futuresAssetsRepository.setTrailingPercent(req.tradingMode, req.user.id, symbol, exchange, trailingPercent);
+  if (!asset) return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" was found on your ${req.tradingMode} watchlist.`, 404);
+  sendSuccess(res, asset, trailingPercent ? `Trailing stop set to ${trailingPercent}% for ${symbol}.` : `Trailing stop disabled for ${symbol}.`);
 }
 
 const STRATEGY_MODES = ['manual', 'auto'];
@@ -237,7 +334,7 @@ async function putRiskSettings(req, res) {
 }
 
 module.exports = {
-  listSymbols, getPortfolio, listOrders, postDemoOrder, postRealOrder,
-  listAssets, addAsset, removeAsset, setAutoTrade, setLeverage, setStrategy, setTimeframe, setStrategyMode,
-  getRiskSettings, putRiskSettings,
+  listSymbols, listFuturesExchanges, getPortfolio, getTradeHistory, listOrders, postDemoOrder, postRealOrder,
+  listAssets, addAsset, removeAsset, setAutoTrade, setLeverage, setExchange, setStrategy, setTimeframe, setStrategyMode,
+  getRiskSettings, putRiskSettings, setTrailingPercent,
 };

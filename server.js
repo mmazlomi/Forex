@@ -15,6 +15,8 @@ const autoTrader = require('./src/services/scheduler/auto-trader');
 const pendingOrdersWatcher = require('./src/services/scheduler/pending-orders-watcher');
 const positionRiskWatcher = require('./src/services/scheduler/position-risk-watcher');
 const futuresAutoTrader = require('./src/services/scheduler/futures-auto-trader');
+const reversalAutoTrader = require('./src/services/scheduler/reversal-auto-trader');
+const reversalSpotAutoTrader = require('./src/services/scheduler/reversal-spot-auto-trader');
 const strategySelector = require('./src/services/scheduler/strategy-selector');
 
 const KNOWN_SECRETS = [
@@ -103,6 +105,8 @@ function start() {
   pendingOrdersWatcher.start();
   positionRiskWatcher.start();
   futuresAutoTrader.start();
+  reversalAutoTrader.start();
+  reversalSpotAutoTrader.start();
   strategySelector.start();
 
   server.on('error', (err) => {

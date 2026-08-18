@@ -2,8 +2,10 @@
 
 const portfolioService = require('../services/portfolio/portfolio-service');
 const portfolioRepository = require('../database/repositories/portfolio-repository');
+const positionsRepository = require('../database/repositories/positions-repository');
 const exchangeClientFactory = require('../services/exchanges/exchange-client-factory');
 const { resolveRealCredentials } = require('../services/exchanges/real-credentials-resolver');
+const { describeStrategyIds } = require('../services/signals/strategies');
 const { sendSuccess, sendError } = require('../utils/http-response');
 const logger = require('../services/logging/logger');
 
@@ -20,6 +22,23 @@ async function getPortfolio(req, res) {
     openPositions,
     pnl: { ...pnl, unrealizedPnl, netPnl: pnl.totalRealizedPnl + unrealizedPnl },
   });
+}
+
+// Complete round-trip trade history — every CLOSED position for this user/mode, most recent
+// first, each enriched with human-readable strategy name(s) exactly like Open Positions already
+// are (see futures-portfolio-service.js's identical enrichment). This is the "which asset, which
+// strategy, which timeframe, entry vs exit, realized win/loss" record the Order History tables
+// don't provide on their own (those show individual orders, not paired entry+exit trades).
+async function getTradeHistory(req, res) {
+  const mode = req.tradingMode;
+  const userId = req.user.id;
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const closedPositions = positionsRepository.listClosedPositions(mode, userId, { limit });
+  const trades = closedPositions.map((position) => ({
+    ...position,
+    strategies: describeStrategyIds(position.strategy_id, position.combined_strategy_ids_json),
+  }));
+  sendSuccess(res, trades);
 }
 
 // Real Trading's balance previously only ever synced from the live exchange as a side effect of
@@ -71,4 +90,4 @@ async function syncRealBalance(req, res) {
   sendSuccess(res, snapshot, `Balance synced from ${credentials.name} (${quoteCurrency}).`);
 }
 
-module.exports = { getPortfolio, syncRealBalance };
+module.exports = { getPortfolio, syncRealBalance, getTradeHistory };

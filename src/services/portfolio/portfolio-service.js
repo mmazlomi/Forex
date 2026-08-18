@@ -5,6 +5,8 @@ const positionsRepository = require('../../database/repositories/positions-repos
 const marketDataService = require('../market-data/market-data-service');
 const logger = require('../logging/logger');
 const config = require('../../../config/config');
+const { resolvePositionStrategy } = require('../signals/resolve-position-strategy');
+const { describeStrategyIds } = require('../signals/strategies');
 
 function startOfTodayUtc() {
   const now = new Date();
@@ -61,8 +63,22 @@ function getSnapshot(mode, userId) {
 }
 
 /** Opens a new position for this user and debits nothing from balance directly — balance already
- *  reflects cash; exposure is derived from open positions, not a separate ledger entry. */
-function openPosition(mode, userId, { symbol, exchange, side, qty, entryPrice, stopLoss, takeProfit }) {
+ *  reflects cash; exposure is derived from open positions, not a separate ledger entry. signalId
+ *  identifies which signal (if any) triggered this open; the strategy/timeframe fields are
+ *  normally resolved server-side from the signal itself (see resolvePositionStrategy) rather than
+ *  trusted from the caller. `strategyId`/`timeframe` are explicit overrides for callers with no
+ *  signals-table row to look up — see futures-portfolio-service.js's identical params for the
+ *  full explanation (Liquidity Sweep Reversal's schedulers). Spot has no manual/auto `source`
+ *  concept (unlike futures) — always recorded 'manual'. `trailingPercent` (percent of price, e.g.
+ *  2 for 2%) opts this position into position-risk-watcher.js's trailing-stop ratchet; the
+ *  high-water-mark it trails against starts at entryPrice — spot is long-only, so it only ever
+ *  moves up, moving stop_loss up with it (never down) as price rises. */
+function openPosition(mode, userId, { symbol, exchange, side, qty, entryPrice, stopLoss, takeProfit, signalId, strategyId: explicitStrategyId, timeframe: explicitTimeframe, trailingPercent }) {
+  const resolved = resolvePositionStrategy(signalId);
+  const strategyId = explicitStrategyId ?? resolved.strategyId;
+  const timeframe = explicitTimeframe ?? resolved.timeframe;
+  const { combinedStrategyIdsJson, combinedVotesJson } = resolved;
+  const hasTrailing = typeof trailingPercent === 'number' && trailingPercent > 0;
   return positionsRepository.insertPosition(mode, userId, {
     symbol,
     exchange: exchange ?? null,
@@ -72,6 +88,13 @@ function openPosition(mode, userId, { symbol, exchange, side, qty, entryPrice, s
     stopLoss: stopLoss ?? null,
     takeProfit: takeProfit ?? null,
     openedAtUtc: new Date().toISOString(),
+    signalId: signalId ?? null,
+    strategyId,
+    combinedStrategyIdsJson,
+    combinedVotesJson,
+    timeframe,
+    trailingPercent: hasTrailing ? trailingPercent : null,
+    trailingHighWaterMark: hasTrailing ? entryPrice : null,
   });
 }
 
@@ -122,20 +145,23 @@ async function getOpenPositionsWithUnrealizedPnl(mode, userId) {
   const openPositions = positionsRepository.listOpenPositions(mode, userId);
   return Promise.all(
     openPositions.map(async (position) => {
+      // Human-readable name(s) for the strategy/strategies that opened this position — see
+      // futures-portfolio-service.js's identical enrichment for the full explanation.
+      const strategies = describeStrategyIds(position.strategy_id, position.combined_strategy_ids_json);
       if (!position.exchange) {
-        return { ...position, currentPrice: null, unrealizedPnl: null };
+        return { ...position, strategies, currentPrice: null, unrealizedPnl: null };
       }
       try {
         const snapshot = await marketDataService.getSnapshot({ symbol: position.symbol, exchange: position.exchange });
         if (snapshot.status !== 'ok' || typeof snapshot.price !== 'number') {
-          return { ...position, currentPrice: null, unrealizedPnl: null };
+          return { ...position, strategies, currentPrice: null, unrealizedPnl: null };
         }
         const direction = position.side === 'buy' ? 1 : -1;
         const unrealizedPnl = direction * (snapshot.price - position.entry_price) * position.qty;
-        return { ...position, currentPrice: snapshot.price, unrealizedPnl };
+        return { ...position, strategies, currentPrice: snapshot.price, unrealizedPnl };
       } catch (err) {
         logger.warn('portfolio', `Failed to fetch live price for unrealized P&L on ${position.symbol}: ${err.message}`, {}, mode);
-        return { ...position, currentPrice: null, unrealizedPnl: null };
+        return { ...position, strategies, currentPrice: null, unrealizedPnl: null };
       }
     })
   );

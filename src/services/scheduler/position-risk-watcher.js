@@ -51,6 +51,40 @@ function checkFuturesTrigger(position, currentPrice) {
   return null;
 }
 
+/**
+ * Pure: given a spot position with trailing_percent set (spot is long-only, so the high-water-mark
+ * only ever rises) and a fresh price, returns the new { stopLoss, highWaterMark } to persist this
+ * cycle, or null if price hasn't made a new high since the last check (nothing to ratchet yet).
+ * stop_loss only ever moves up (toward price), matching a real trailing stop — never loosens.
+ */
+function computeSpotTrailingUpdate(position, currentPrice) {
+  if (typeof position.trailing_percent !== 'number' || position.trailing_percent <= 0) return null;
+  const priorHighWaterMark = position.trailing_high_water_mark ?? position.entry_price;
+  const highWaterMark = Math.max(priorHighWaterMark, currentPrice);
+  if (highWaterMark === priorHighWaterMark) return null;
+  const stopLoss = highWaterMark * (1 - position.trailing_percent / 100);
+  if (typeof position.stop_loss === 'number' && stopLoss <= position.stop_loss) return null;
+  return { stopLoss, highWaterMark };
+}
+
+/** Same idea as computeSpotTrailingUpdate, side-aware: a long's high-water-mark rises with price
+ *  (stop follows up from below), a short's falls with price (stop follows down from above). */
+function computeFuturesTrailingUpdate(position, currentPrice) {
+  if (typeof position.trailing_percent !== 'number' || position.trailing_percent <= 0) return null;
+  const isLong = position.side === 'long';
+  const priorHighWaterMark = position.trailing_high_water_mark ?? position.entry_price;
+  const highWaterMark = isLong ? Math.max(priorHighWaterMark, currentPrice) : Math.min(priorHighWaterMark, currentPrice);
+  if (highWaterMark === priorHighWaterMark) return null;
+  const stopLoss = isLong
+    ? highWaterMark * (1 - position.trailing_percent / 100)
+    : highWaterMark * (1 + position.trailing_percent / 100);
+  if (typeof position.stop_loss === 'number') {
+    const improved = isLong ? stopLoss > position.stop_loss : stopLoss < position.stop_loss;
+    if (!improved) return null;
+  }
+  return { stopLoss, highWaterMark };
+}
+
 function logTriggerResult(mode, market, position, reason, snapshotPrice, order) {
   const label = reason === 'stop_loss' ? 'Stop-loss' : 'Take-profit';
   logger.info(
@@ -89,6 +123,19 @@ async function checkSpotPositions(mode) {
       const snapshot = await marketDataService.getSnapshot({ symbol: position.symbol, exchange: position.exchange });
       if (snapshot.status !== 'ok' || typeof snapshot.price !== 'number') continue;
 
+      const trailingUpdate = computeSpotTrailingUpdate(position, snapshot.price);
+      if (trailingUpdate) {
+        positionsRepository.updateTrailingStop(mode, position.user_id, position.id, trailingUpdate);
+        logger.info(
+          'position-risk-watcher',
+          `Trailing stop for ${position.symbol} (spot ${mode}) raised to ${trailingUpdate.stopLoss} at price ${snapshot.price}`,
+          { positionId: position.id, userId: position.user_id },
+          mode
+        );
+        position.stop_loss = trailingUpdate.stopLoss; // so the trigger check below sees the ratcheted value this same cycle
+        position.trailing_high_water_mark = trailingUpdate.highWaterMark;
+      }
+
       const reason = checkSpotTrigger(position, snapshot.price);
       if (!reason) continue;
 
@@ -117,6 +164,19 @@ async function checkFuturesPositions(mode) {
     try {
       const snapshot = await marketDataService.getFuturesSnapshot({ symbol: position.symbol, exchange: position.exchange });
       if (snapshot.status !== 'ok' || typeof snapshot.price !== 'number') continue;
+
+      const trailingUpdate = computeFuturesTrailingUpdate(position, snapshot.price);
+      if (trailingUpdate) {
+        futuresPositionsRepository.updateTrailingStop(mode, position.user_id, position.id, trailingUpdate);
+        logger.info(
+          'position-risk-watcher',
+          `Trailing stop for ${position.symbol} (futures ${mode}) moved to ${trailingUpdate.stopLoss} at price ${snapshot.price}`,
+          { positionId: position.id, userId: position.user_id },
+          mode
+        );
+        position.stop_loss = trailingUpdate.stopLoss; // so the trigger check below sees the ratcheted value this same cycle
+        position.trailing_high_water_mark = trailingUpdate.highWaterMark;
+      }
 
       const reason = checkFuturesTrigger(position, snapshot.price);
       if (!reason) continue;
@@ -177,4 +237,7 @@ function getStatus() {
   };
 }
 
-module.exports = { start, stop, runCycle, getStatus, checkSpotTrigger, checkFuturesTrigger };
+module.exports = {
+  start, stop, runCycle, getStatus, checkSpotTrigger, checkFuturesTrigger,
+  computeSpotTrailingUpdate, computeFuturesTrailingUpdate,
+};

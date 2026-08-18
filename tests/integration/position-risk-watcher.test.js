@@ -180,6 +180,66 @@ test('futures real: closes on the real exchange (reduceOnly) once price crosses 
   assert.equal(createOrderCalls[0][5].reduceOnly, true);
 });
 
+test('spot demo trailing stop: ratchets up as price rises, then closes at the RATCHETED stop, not the original one', async (t) => {
+  mockSpotPrice(t, 100);
+  await placeDemoOrder({ userId: testUserId, symbol: 'BTC/USDT', exchange: 'kucoin', side: 'buy', stopLoss: 90, takeProfit: 1000, trailingPercent: 5 });
+  const opened = positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT');
+  assert.equal(opened.stop_loss, 90);
+  assert.equal(opened.trailing_high_water_mark, 100);
+
+  mockSpotPrice(t, 150); // new high — should ratchet stop_loss up to 150 * 0.95 = 142.5, well above the original 90
+  await positionRiskWatcher.runCycle();
+  const afterRise = positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT');
+  assert.equal(afterRise.trailing_high_water_mark, 150);
+  assert.equal(afterRise.stop_loss, 142.5);
+
+  mockSpotPrice(t, 145); // below the original stop-loss (90 -> long gone) but still above the ratcheted one (142.5) — must stay open
+  await positionRiskWatcher.runCycle();
+  assert.ok(positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT'), 'the ratcheted stop, not the original, is what should govern now');
+
+  mockSpotPrice(t, 140); // through the ratcheted stop (142.5)
+  await positionRiskWatcher.runCycle();
+  assert.equal(positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT'), undefined);
+  const closeOrder = ordersRepository.listOrders('demo', testUserId, {})[0];
+  assert.equal(closeOrder.side, 'sell');
+  assert.equal(closeOrder.price, 140);
+});
+
+test('spot demo: a position with no trailingPercent never has its stop_loss touched by the watcher', async (t) => {
+  mockSpotPrice(t, 100);
+  await placeDemoOrder({ userId: testUserId, symbol: 'BTC/USDT', exchange: 'kucoin', side: 'buy', stopLoss: 90, takeProfit: 1000 });
+
+  mockSpotPrice(t, 150);
+  await positionRiskWatcher.runCycle();
+
+  const position = positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT');
+  assert.equal(position.stop_loss, 90, 'no trailing_percent set — the original stop must be untouched regardless of price');
+  assert.equal(position.trailing_high_water_mark, null);
+});
+
+test('futures demo (short) trailing stop: ratchets down as price falls, closes at the ratcheted stop', async (t) => {
+  mockFuturesPrice(t, 60000);
+  await placeDemoFuturesOrder({
+    userId: testUserId, symbol: 'BTC/USDT:USDT', exchange: 'kucoin', action: 'open_short', leverage: 3,
+    stopLoss: 65000, takeProfit: 1000, trailingPercent: 2,
+  });
+  assert.equal(futuresPositionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT:USDT').stop_loss, 65000);
+
+  mockFuturesPrice(t, 50000); // new low for a short — ratchets stop_loss down to 50000 * 1.02 = 51000
+  await positionRiskWatcher.runCycle();
+  const afterFall = futuresPositionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT:USDT');
+  assert.equal(afterFall.trailing_high_water_mark, 50000);
+  assert.equal(afterFall.stop_loss, 51000);
+
+  mockFuturesPrice(t, 50800); // ticked back up a bit but still below the ratcheted stop (51000) and the original (65000) — should stay open
+  await positionRiskWatcher.runCycle();
+  assert.ok(futuresPositionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT:USDT'));
+
+  mockFuturesPrice(t, 51500); // through the ratcheted stop
+  await positionRiskWatcher.runCycle();
+  assert.equal(futuresPositionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT:USDT'), undefined);
+});
+
 test('runCycle never throws when a mode has no open positions at all', async () => {
   await assert.doesNotReject(() => positionRiskWatcher.runCycle());
 });

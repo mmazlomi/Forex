@@ -65,6 +65,10 @@ const AuthGate = (() => {
     });
 
     document.getElementById('logout-btn').addEventListener('click', async () => {
+      // Must happen before the reload regardless of whether Api.logout() itself succeeds —
+      // otherwise a different account logging into this same browser tab afterward would
+      // inherit this account's persisted Real Trading unlock. See mode-switcher.js.
+      ModeSwitcher.clearRealUnlock();
       try {
         await Api.logout();
       } finally {

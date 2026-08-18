@@ -46,7 +46,16 @@ async function startAuthedTestServer({ username } = {}) {
   });
   const setCookieHeader = signupRes.headers.get('set-cookie');
   const cookie = setCookieHeader ? setCookieHeader.split(';')[0] : null;
-  if (!cookie) throw new Error('Test fixture failed to obtain a session cookie from /api/auth/signup');
+  if (!cookie) {
+    // Close the server we just opened before throwing — otherwise this leaves a listening TCP
+    // server with no way to close it (the caller never got `close`), which doesn't fail loudly:
+    // it just keeps the process alive, so `node --test` hangs until forcibly killed instead of
+    // reporting the real failure below. A common real cause: signupLimiter (5/60s) — a test file
+    // making more than 5 startAuthedTestServer() calls trips it on the 6th.
+    await close();
+    const responseBody = await signupRes.text().catch(() => '<unreadable body>');
+    throw new Error(`Test fixture failed to obtain a session cookie from /api/auth/signup (HTTP ${signupRes.status}): ${responseBody}`);
+  }
 
   function authedFetch(path, opts = {}) {
     return fetch(`${baseUrl}${path}`, { ...opts, headers: { ...(opts.headers || {}), Cookie: cookie } });
@@ -74,7 +83,10 @@ async function signUpSecondUser(baseUrl, { username } = {}) {
   });
   const setCookieHeader = signupRes.headers.get('set-cookie');
   const cookie = setCookieHeader ? setCookieHeader.split(';')[0] : null;
-  if (!cookie) throw new Error('Test fixture failed to obtain a session cookie from /api/auth/signup');
+  if (!cookie) {
+    const responseBody = await signupRes.text().catch(() => '<unreadable body>');
+    throw new Error(`Test fixture failed to obtain a session cookie from /api/auth/signup (HTTP ${signupRes.status}): ${responseBody}`);
+  }
 
   function authedFetch(path, opts = {}) {
     return fetch(`${baseUrl}${path}`, { ...opts, headers: { ...(opts.headers || {}), Cookie: cookie } });

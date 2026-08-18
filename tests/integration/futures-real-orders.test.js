@@ -141,3 +141,89 @@ test('futures-real-orders: marginCurrencyFor correctly parses KuCoin\'s BASE/QUO
   // naive symbol.split('/')[1] would have returned 'USDT:USDT' here — the exact bug this helper
   // avoids, discovered by reading ccxt's own exchange source.
 });
+
+// CoinEx (leverageMode: 'preset' in exchange-client-factory.js's FUTURES_EXCHANGES) has a
+// different order-placement shape from KuCoin's — this is the regression test for that branch.
+// Uses a DB-stored credential for a fresh (non-legacy-owner) user rather than the file-level
+// REAL_EXCHANGE_NAME=kucoin .env fallback, which only ever applies to the "hoseini" account.
+function makeFakeCoinexFuturesClient({ liquidationPrice = 48300 } = {}) {
+  const calls = { setLeverage: [], createOrder: [], fetchPositions: [] };
+  return {
+    calls,
+    fetchBalance: async () => ({ free: { USDT: 10000 } }),
+    setLeverage: async (...args) => { calls.setLeverage.push(args); },
+    createOrder: async (...args) => { calls.createOrder.push(args); return { id: 'ex-order-coinex-1', status: 'closed' }; },
+    fetchPositions: async (...args) => {
+      calls.fetchPositions.push(args);
+      return [{ symbol: 'BTC/USDT:USDT', liquidationPrice }];
+    },
+  };
+}
+
+test('futures-real-orders: a well-formed CoinEx open_long calls setLeverage(leverage, symbol, {marginMode}) BEFORE createOrder, and createOrder gets no inline marginMode/leverage', async (t) => {
+  resetForTests();
+  const realExchangeCredentialsRepository = require('../../src/database/repositories/real-exchange-credentials-repository');
+  const { placeRealFuturesOrder } = require('../../src/services/orders/futures-real-orders');
+  const userId = usersRepository.createUser('coinex-real-futures-user', 'irrelevant-hash').id;
+  realExchangeCredentialsRepository.set(userId, 'coinex', 'k', 's');
+
+  const fakeClient = makeFakeCoinexFuturesClient();
+  t.mock.method(exchangeClientFactory, 'getRealFuturesExchange', () => fakeClient);
+  t.mock.method(marketDataService, 'getFuturesSnapshot', async () => mockPrice(60000));
+
+  const order = await placeRealFuturesOrder({
+    userId, symbol: 'BTC/USDT:USDT', exchange: 'coinex', action: 'open_long', leverage: 5, stopLoss: 50000, takeProfit: 80000, unlockConfirmed: true,
+  });
+
+  assert.equal(order.status, 'filled');
+  assert.equal(fakeClient.calls.setLeverage.length, 1);
+  assert.deepEqual(fakeClient.calls.setLeverage[0], [5, 'BTC/USDT:USDT', { marginMode: 'isolated' }]);
+  assert.equal(fakeClient.calls.createOrder.length, 1);
+  const [symbol, type, side, amount, price, params] = fakeClient.calls.createOrder[0];
+  assert.equal(symbol, 'BTC/USDT:USDT');
+  assert.equal(type, 'market');
+  assert.equal(side, 'buy');
+  assert.ok(amount > 0);
+  assert.equal(price, undefined);
+  assert.deepEqual(params, {}, 'CoinEx does not accept marginMode/leverage inline — they were already set via setLeverage');
+
+  realExchangeCredentialsRepository.clear(userId);
+});
+
+test('futures-real-orders: a CoinEx setLeverage failure rejects the order and never calls createOrder', async (t) => {
+  resetForTests();
+  const realExchangeCredentialsRepository = require('../../src/database/repositories/real-exchange-credentials-repository');
+  const { placeRealFuturesOrder } = require('../../src/services/orders/futures-real-orders');
+  const userId = usersRepository.createUser('coinex-real-futures-user-2', 'irrelevant-hash').id;
+  realExchangeCredentialsRepository.set(userId, 'coinex', 'k', 's');
+
+  const fakeClient = makeFakeCoinexFuturesClient();
+  fakeClient.setLeverage = async () => { throw new Error('leverage rejected by exchange'); };
+  t.mock.method(exchangeClientFactory, 'getRealFuturesExchange', () => fakeClient);
+  t.mock.method(marketDataService, 'getFuturesSnapshot', async () => mockPrice(60000));
+
+  const order = await placeRealFuturesOrder({
+    userId, symbol: 'BTC/USDT:USDT', exchange: 'coinex', action: 'open_long', leverage: 5, stopLoss: 50000, takeProfit: 80000, unlockConfirmed: true,
+  });
+  assert.equal(order.status, 'rejected');
+  assert.match(order.reject_reason, /EXCHANGE_ORDER_FAILED/);
+  assert.equal(fakeClient.calls.createOrder.length, 0, 'a failed leverage-set must never let an order through');
+
+  realExchangeCredentialsRepository.clear(userId);
+});
+
+test('futures-real-orders: rejects a real credential exchange that supports spot but not futures', async () => {
+  resetForTests();
+  const realExchangeCredentialsRepository = require('../../src/database/repositories/real-exchange-credentials-repository');
+  const { placeRealFuturesOrder } = require('../../src/services/orders/futures-real-orders');
+  const userId = usersRepository.createUser('unsupported-futures-exchange-user', 'irrelevant-hash').id;
+  realExchangeCredentialsRepository.set(userId, 'binance', 'k', 's');
+
+  const order = await placeRealFuturesOrder({
+    userId, symbol: 'BTC/USDT:USDT', exchange: 'binance', action: 'open_long', leverage: 5, stopLoss: 50000, takeProfit: 80000, unlockConfirmed: true,
+  });
+  assert.equal(order.status, 'rejected');
+  assert.match(order.reject_reason, /FUTURES_EXCHANGE_UNSUPPORTED/);
+
+  realExchangeCredentialsRepository.clear(userId);
+});

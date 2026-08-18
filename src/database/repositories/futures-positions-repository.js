@@ -24,10 +24,15 @@ function insertPosition(mode, userId, position) {
   const table = futuresPositionsTable(mode);
   const result = db
     .prepare(
-      `INSERT INTO ${table} (user_id, symbol, exchange, side, leverage, margin_mode, qty, entry_price, liquidation_price, stop_loss, take_profit, opened_at_utc, status)
-       VALUES (@userId, @symbol, @exchange, @side, @leverage, @marginMode, @qty, @entryPrice, @liquidationPrice, @stopLoss, @takeProfit, @openedAtUtc, 'open')`
+      `INSERT INTO ${table} (user_id, symbol, exchange, side, leverage, margin_mode, qty, entry_price, liquidation_price, stop_loss, take_profit, opened_at_utc, status, signal_id, strategy_id, combined_strategy_ids_json, combined_votes_json, source, timeframe, trailing_percent, trailing_high_water_mark)
+       VALUES (@userId, @symbol, @exchange, @side, @leverage, @marginMode, @qty, @entryPrice, @liquidationPrice, @stopLoss, @takeProfit, @openedAtUtc, 'open', @signalId, @strategyId, @combinedStrategyIdsJson, @combinedVotesJson, @source, @timeframe, @trailingPercent, @trailingHighWaterMark)`
     )
-    .run({ marginMode: 'isolated', liquidationPrice: null, ...position, userId });
+    .run({
+      marginMode: 'isolated', liquidationPrice: null,
+      signalId: null, strategyId: null, combinedStrategyIdsJson: null, combinedVotesJson: null, source: 'manual', timeframe: null,
+      trailingPercent: null, trailingHighWaterMark: null,
+      ...position, userId,
+    });
   return db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(result.lastInsertRowid);
 }
 
@@ -94,6 +99,16 @@ function updateLiquidationPrice(mode, userId, id, liquidationPrice) {
   return getPosition(mode, userId, id);
 }
 
+/** Ratchets a trailing-stop position's stop_loss/high-water-mark — called every position-risk-
+ *  watcher.js cycle for positions with trailing_percent set. Ownership-scoped like getPosition;
+ *  updates nothing if the id/userId pair doesn't match an existing row. */
+function updateTrailingStop(mode, userId, id, { stopLoss, highWaterMark }) {
+  const db = getDb();
+  const table = futuresPositionsTable(mode);
+  db.prepare(`UPDATE ${table} SET stop_loss = ?, trailing_high_water_mark = ? WHERE id = ? AND user_id = ?`).run(stopLoss, highWaterMark, id, userId);
+  return getPosition(mode, userId, id);
+}
+
 module.exports = {
   listOpenPositions,
   listAllOpenPositions,
@@ -106,4 +121,5 @@ module.exports = {
   countClosedByOutcome,
   listClosedPositions,
   updateLiquidationPrice,
+  updateTrailingStop,
 };

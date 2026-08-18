@@ -137,6 +137,7 @@
     const panel = document.getElementById(`tab-${tabName}`);
     if (panel) panel.classList.add('tab-panel--active');
 
+    if (tabName === 'dashboard') refreshWatchList();
     if (tabName === 'demo') { refreshPortfolio('demo'); Futures.refreshPortfolio('demo'); }
     if (tabName === 'real') {
       refreshPortfolio('real');
@@ -176,7 +177,7 @@
     }
 
     updateSpotCurrentSymbolLabels();
-    await Promise.all([loadMarketData(), loadChart(), loadIndicators(), loadFundamentals(), loadSignalHistory()]);
+    await Promise.all([loadMarketData(), loadChart(), loadIndicators(), loadFundamentals()]);
   }
 
   // ---------- strategies ----------
@@ -253,7 +254,113 @@
     list.hidden = false;
   }
 
-  // ---------- spot watchlist (Watchlist tab) ----------
+  // ---------- WatchList tab (lightweight tracking list, separate from Signals Setting below) ----------
+
+  let watchlistItemsCache = [];
+
+  async function refreshWatchList() {
+    const body = document.getElementById('watchlist-body');
+    const emptyEl = document.getElementById('watchlist-empty');
+    try {
+      watchlistItemsCache = await Api.listWatchlist();
+      clear(body);
+      emptyEl.hidden = watchlistItemsCache.length > 0;
+
+      watchlistItemsCache.forEach((item, index) => {
+        const row = el('tr');
+        row.appendChild(el('td', { class: 'cmc-rank' }, String(index + 1)));
+
+        const symbolCell = el('td');
+        const symbolWrap = el('div', { class: 'cmc-symbol-cell' });
+        symbolWrap.appendChild(symbolAvatar(item.symbol));
+        symbolWrap.appendChild(el('span', { class: 'cmc-symbol-name' }, item.symbol));
+        symbolCell.appendChild(symbolWrap);
+        row.appendChild(symbolCell);
+
+        // Live price/24h % — same fire-and-forget per-row fetch as refreshSpotWatchlist below.
+        const priceCell = el('td', { class: 'cmc-price' }, '…');
+        const changeCell = el('td');
+        row.appendChild(priceCell);
+        row.appendChild(changeCell);
+        Api.getMarketData(item.symbol, item.exchange).then((snapshot) => {
+          priceCell.textContent = fmtPrice(snapshot.price);
+          clear(changeCell);
+          changeCell.appendChild(changeBadge(snapshot.changePercent24h));
+        }).catch(() => {
+          priceCell.textContent = '-';
+        });
+
+        row.appendChild(el('td', {}, item.exchange));
+        row.appendChild(el('td', {}, item.asset_type));
+
+        const promoteBtn = el('button', { type: 'button' }, 'Add to Signals Setting');
+        promoteBtn.title = 'Adds this asset to Spot Signals Setting plus Demo & Real Futures Signals Setting (1h timeframe, default strategy, 3x leverage).';
+        promoteBtn.addEventListener('click', async () => {
+          promoteBtn.disabled = true;
+          try {
+            const result = await Api.promoteWatchlistItem(item.symbol, item.exchange);
+            toast(`${item.symbol} — spot: ${result.spot}${result.demoFutures ? `; demo futures: ${result.demoFutures}` : ''}${result.realFutures ? `; real futures: ${result.realFutures}` : ''}`, 'success');
+            await refreshSpotWatchlist();
+            await Futures.refreshBothWatchlists();
+          } catch (err) {
+            toast(`Failed to add ${item.symbol} to Signals Setting: ${err.message}`, 'error');
+          } finally {
+            promoteBtn.disabled = false;
+          }
+        });
+        const promoteCell = el('td');
+        promoteCell.appendChild(promoteBtn);
+        row.appendChild(promoteCell);
+
+        const removeBtn = el('button', { type: 'button' }, 'Remove');
+        removeBtn.addEventListener('click', async () => {
+          try {
+            await Api.removeFromWatchlist(item.symbol, item.exchange);
+            await refreshWatchList();
+          } catch (err) {
+            toast(`Failed to remove: ${err.message}`, 'error');
+          }
+        });
+        const removeCell = el('td');
+        removeCell.appendChild(removeBtn);
+        row.appendChild(removeCell);
+
+        const chartBtn = el('button', { type: 'button' }, 'Chart');
+        chartBtn.title = 'Load this asset into the Market Data / Chart / Technical Analysis cards below.';
+        chartBtn.addEventListener('click', async () => {
+          loadAssetInto(item);
+          await loadAsset();
+          document.getElementById('price-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+        const chartCell = el('td');
+        chartCell.appendChild(chartBtn);
+        row.appendChild(chartCell);
+
+        body.appendChild(row);
+      });
+    } catch (err) {
+      toast(`Failed to load WatchList: ${err.message}`, 'error');
+    }
+  }
+
+  async function addAssetToWatchList() {
+    const symbol = document.getElementById('symbol-input').value.trim();
+    const exchange = document.getElementById('exchange-input').value.trim().toLowerCase();
+    const assetType = document.getElementById('asset-type-input').value;
+    if (!symbol || !exchange) {
+      toast('Symbol and exchange are required.', 'error');
+      return;
+    }
+    try {
+      await Api.addToWatchlist({ symbol, exchange, assetType });
+      toast(`${symbol} added to WatchList.`, 'success');
+      await refreshWatchList();
+    } catch (err) {
+      toast(`Failed to add to WatchList: ${err.message}`, 'error');
+    }
+  }
+
+  // ---------- spot Signals Setting (Signals Setting tab) ----------
 
   function loadAssetInto(asset) {
     document.getElementById('exchange-input').value = asset.exchange;
@@ -374,6 +481,26 @@
         }
         row.appendChild(strategyCell);
 
+        // Default trailing-stop distance for a position opened from this asset (manually via
+        // "Trade from Signal", or by AI Auto-Trade) — blank/0 means off. Saved on blur, not on
+        // every keystroke, matching a plain number input's natural change-commit point.
+        const trailingInput = el('input', { type: 'number', step: 'any', min: '0', max: '100', placeholder: 'off' });
+        if (asset.trailing_percent != null) trailingInput.value = String(asset.trailing_percent);
+        trailingInput.title = 'Trailing-stop % this asset\'s positions use by default (manual "Trade from Signal" and AI Auto-Trade). Leave blank to trade with a fixed stop-loss instead.';
+        trailingInput.addEventListener('change', async () => {
+          const value = trailingInput.value ? Number(trailingInput.value) : null;
+          try {
+            await Api.setAssetTrailingPercent(asset.symbol, asset.exchange, value);
+            toast(value ? `Trailing stop set to ${value}% for ${asset.symbol}.` : `Trailing stop disabled for ${asset.symbol}.`, 'success');
+          } catch (err) {
+            trailingInput.value = asset.trailing_percent != null ? String(asset.trailing_percent) : '';
+            toast(`Failed to update trailing stop: ${err.message}`, 'error');
+          }
+        });
+        const trailingCell = el('td');
+        trailingCell.appendChild(trailingInput);
+        row.appendChild(trailingCell);
+
         const autoSelectCheckbox = el('input', { type: 'checkbox' });
         autoSelectCheckbox.checked = asset.strategy_mode === 'auto';
         autoSelectCheckbox.title = 'Let the AI pick 2-3 strategies for this asset by backtested win rate, trading only when a majority agree, instead of the single Strategy above.';
@@ -406,6 +533,25 @@
         const autoTradeCell = el('td');
         autoTradeCell.appendChild(autoTradeCheckbox);
         row.appendChild(autoTradeCell);
+
+        // Real-money spot auto-trading — currently only actually acted on for the Liquidity
+        // Sweep Reversal strategy (reversal-spot-auto-trader.js); a no-op for every other
+        // strategy today, since the original AI auto-trader above is Demo-only by design.
+        const realAutoTradeCheckbox = el('input', { type: 'checkbox' });
+        realAutoTradeCheckbox.checked = !!asset.real_auto_trade_enabled;
+        realAutoTradeCheckbox.title = 'Real-money auto-trading. Currently only takes effect for the "Liquidity Sweep Reversal" strategy — also requires ENABLE_SPOT_AUTO_TRADING on the server (a restart-only .env setting) and Real credentials configured for your account.';
+        realAutoTradeCheckbox.addEventListener('change', async () => {
+          try {
+            const result = await Api.setRealAutoTrade(asset.symbol, asset.exchange, realAutoTradeCheckbox.checked);
+            toast(result.message || `Real Auto-Trade ${realAutoTradeCheckbox.checked ? 'enabled' : 'disabled'} for ${asset.symbol}.`, 'success');
+          } catch (err) {
+            realAutoTradeCheckbox.checked = !realAutoTradeCheckbox.checked;
+            toast(`Failed to update Real Auto-Trade: ${err.message}`, 'error');
+          }
+        });
+        const realAutoTradeCell = el('td');
+        realAutoTradeCell.appendChild(realAutoTradeCheckbox);
+        row.appendChild(realAutoTradeCell);
 
         const tradeDemoBtn = el('button', { type: 'button' }, 'Trade Demo');
         tradeDemoBtn.addEventListener('click', () => tradeWatchlistAsset(asset, 'demo'));
@@ -651,67 +797,37 @@
     return el('span', { class: `signal-badge signal-badge--${status.toLowerCase()}` }, status);
   }
 
-  function renderCurrentSignal(signal) {
-    const container = document.getElementById('signal-current');
-    clear(container);
-    container.appendChild(signalBadge(signal.status));
-    container.appendChild(el('p', {}, `Strategy: ${signal.strategyName || 'Balanced'} | Final score: ${fmt(signal.finalScore, 3)} | Confidence: ${fmt(signal.confidence, 2)} | Data quality: ${signal.dataQuality}`));
-    if (signal.entry !== null) {
-      container.appendChild(el('p', {}, `Entry ${fmtPrice(signal.entry)} / Stop ${fmtPrice(signal.stopLoss)} / Take ${fmtPrice(signal.takeProfit)} / R:R ${fmt(signal.riskRewardRatio, 2)}`));
-    }
-    const reasons = el('ul');
-    (signal.reasons || []).forEach((r) => reasons.appendChild(el('li', {}, r)));
-    container.appendChild(reasons);
-    if (signal.warnings && signal.warnings.length > 0) {
-      const warn = el('p', { class: 'text-negative' }, signal.warnings.join(' '));
-      container.appendChild(warn);
-    }
-  }
-
-  async function generateSignal() {
-    try {
-      // No providerId — the backend resolves the correct CoinGecko coin id for crypto assets.
-      const signal = await Api.analyzeSignal({
-        symbol: currentAsset.symbol, exchange: currentAsset.exchange, timeframe: currentAsset.timeframe,
-        assetType: currentAsset.assetType, mode: ModeSwitcher.getMode(),
-        strategyId: document.getElementById('strategy-select').value,
-      });
-      renderCurrentSignal(signal);
-      await loadSignalHistory();
-      toast(`Signal generated: ${signal.status}`, 'success');
-    } catch (err) {
-      toast(`Failed to generate signal: ${err.message}`, 'error');
-    }
-  }
-
-  async function loadSignalHistory() {
-    try {
-      const signals = await Api.listSignals(currentAsset.symbol, undefined, 20);
-      const body = document.getElementById('signal-history-body');
-      clear(body);
-      signals.forEach((s) => {
-        const row = el('tr');
-        row.append(
-          el('td', {}, formatTimestamp(s.ts_utc)),
-          el('td', {}, s.symbol),
-          el('td', {}, s.status),
-          el('td', {}, fmt(s.final_score, 3)),
-          el('td', {}, fmt(s.confidence, 2)),
-          el('td', {}, fmtPrice(s.entry)),
-          el('td', {}, fmtPrice(s.stop_loss)),
-          el('td', {}, fmtPrice(s.take_profit)),
-          el('td', {}, fmt(s.risk_reward_ratio, 2))
-        );
-        body.appendChild(row);
-      });
-    } catch (err) {
-      toast(`Failed to load signal history: ${err.message}`, 'error');
-    }
-  }
-
   function strategyName(strategyId) {
     const strategy = strategiesCache.find((s) => s.id === strategyId);
     return strategy ? strategy.name : (strategyId || 'Balanced');
+  }
+
+  // Liquidity Sweep Reversal never goes through the normal signal engine — it trades directly off
+  // its own dedicated scheduler (reversal-auto-trader.js / reversal-spot-auto-trader.js), which
+  // never writes a row into the signals table (see strategies.js#scoringRejectionReason's server-
+  // side twin of this constant). Once an asset is switched to LSR, the regular auto-trader also
+  // stops generating signals for it (auto-trader.js's identical guard) — so the *last* signals-
+  // table row for that symbol/exchange is a leftover from whatever strategy it had before the
+  // switch, not something LSR produced. Showing that stale row next to "Liquidity Sweep Reversal"
+  // in the Strategy column was actively misleading, so both loadLastWatchlistSignals() and
+  // generateSignalsForWatchlist() special-case it below instead.
+  const LSR_STRATEGY_ID = 'liquidity-sweep-reversal';
+  const LSR_NOTICE = 'Trades directly via its own scheduler, not through this table — see Open Positions / Trade History.';
+
+  // Read-only progress through LSR's Sweep -> Divergence -> CHOCH -> Retest -> Entry state
+  // machine (see reversal-controller.js) — this is what "generate a signal" means for LSR, since
+  // it never scores on demand the way the weighted strategies do. Falls back to the static
+  // LSR_NOTICE if the live-status fetch itself fails (e.g. offline), rather than showing an error
+  // for something that isn't actually broken. `tsUtc` is the close time of the most recently
+  // processed candle (signal or entry timeframe, whichever is later) — how current this status
+  // actually is, not "now" — null before the first cycle has processed any bar yet.
+  async function buildLsrStatusNotice(asset) {
+    try {
+      const status = await Api.getReversalStatus(asset.symbol, asset.exchange, asset.market || 'spot', ModeSwitcher.getMode());
+      return { label: status.label, tsUtc: status.asOfTsUtc || null };
+    } catch {
+      return { label: LSR_NOTICE, tsUtc: null };
+    }
   }
 
   // Read-only summary shown in the Strategy column in place of the manual <select> once an asset
@@ -735,14 +851,30 @@
   function renderWatchlistSignalsTable(results) {
     const body = document.getElementById('watchlist-signals-body');
     clear(body);
-    results.forEach(({ asset, signal, error, notice }) => {
+    // Most recently generated signal first; entries with no timestamp yet (error/notice rows,
+    // or a slot not generated yet during generateSignalsForWatchlist's incremental fill) sort
+    // to the bottom rather than scattering among timestamped rows. An LSR notice row carries its
+    // own timestamp (noticeTsUtc — the last candle its live status was computed as of), so it
+    // sorts by recency like every other row instead of always falling to the bottom.
+    const sorted = [...results].sort((a, b) => {
+      const tA = a.signal?.tsUtc ? Date.parse(a.signal.tsUtc) : a.noticeTsUtc ? Date.parse(a.noticeTsUtc) : -Infinity;
+      const tB = b.signal?.tsUtc ? Date.parse(b.signal.tsUtc) : b.noticeTsUtc ? Date.parse(b.noticeTsUtc) : -Infinity;
+      return tB - tA;
+    });
+    sorted.forEach(({ asset, signal, error, notice, noticeTsUtc }) => {
       const row = el('tr');
-      row.append(el('td', {}, asset.symbol), el('td', {}, asset.exchange), el('td', {}, strategyName(asset.strategy_id)));
+      row.append(
+        el('td', {}, asset.symbol),
+        el('td', {}, asset.market === 'futures' ? 'Futures' : 'Spot'),
+        el('td', {}, asset.exchange),
+        el('td', {}, strategyName(asset.strategy_id))
+      );
       if (error || notice) {
         // `notice` (e.g. "no signal yet") is informational — muted, not styled as a failure the
         // way a genuine fetch/generate `error` is.
         const messageCell = notice ? el('td', { class: 'hint' }, notice) : el('td', { class: 'text-negative' }, `Error: ${error}`);
-        row.append(el('td', {}, '-'), messageCell, el('td', {}, '-'), el('td', {}, '-'), el('td', {}, '-'), el('td', {}, '-'), el('td', {}, '-'));
+        const timeCell = el('td', {}, noticeTsUtc ? formatTimestamp(noticeTsUtc) : '-');
+        row.append(timeCell, messageCell, el('td', {}, '-'), el('td', {}, '-'), el('td', {}, '-'), el('td', {}, '-'), el('td', {}, '-'));
       } else {
         const statusCell = el('td');
         statusCell.appendChild(signalBadge(signal.status));
@@ -776,6 +908,25 @@
     };
   }
 
+  // Spot Signals Setting (watchlistCache, mode-agnostic — one shared list) plus the current
+  // mode's Futures Signals Setting (Demo or Real are genuinely separate symbol lists — see
+  // futures.js's header comment — so only whichever one matches ModeSwitcher.getMode() is
+  // included). Fetched fresh from the API rather than reading Futures' own cache, so this stays
+  // a read-only, additive query with no shared state between the two modules. Real is only
+  // queried when unlocked — Api.listFuturesAssets('real') 403s otherwise.
+  async function getSignalsSettingEntries() {
+    const spotEntries = watchlistCache.map((asset) => ({ ...asset, market: 'spot' }));
+    const mode = ModeSwitcher.getMode();
+    if (mode === 'real' && !ModeSwitcher.isRealUnlocked()) return spotEntries;
+    try {
+      const futuresAssets = await Api.listFuturesAssets(mode);
+      const futuresEntries = futuresAssets.map((asset) => ({ ...asset, market: 'futures', asset_type: 'crypto' }));
+      return [...spotEntries, ...futuresEntries];
+    } catch {
+      return spotEntries; // futures list unavailable — still show spot results rather than nothing
+    }
+  }
+
   // Populates the Watchlist Signals table from each asset's most recently *persisted* signal
   // (every signal generated anywhere in the app — single-asset or batch — is saved to the
   // database, so this survives a page refresh even though the batch results themselves were
@@ -783,11 +934,16 @@
   // clicking "Generate for Watchlist", so a refresh shows the last known state instead of an
   // empty table.
   async function loadLastWatchlistSignals() {
-    if (watchlistCache.length === 0) {
+    const entries = await getSignalsSettingEntries();
+    if (entries.length === 0) {
       renderWatchlistSignalsTable([]);
       return;
     }
-    const results = await Promise.all(watchlistCache.map(async (asset) => {
+    const results = await Promise.all(entries.map(async (asset) => {
+      if (asset.strategy_id === LSR_STRATEGY_ID) {
+        const { label, tsUtc } = await buildLsrStatusNotice(asset);
+        return { asset, notice: label, noticeTsUtc: tsUtc };
+      }
       try {
         // listSignals() only filters by symbol, not exchange (the same symbol could be on more
         // than one exchange in the watchlist) — fetch a few and pick the newest matching this
@@ -803,33 +959,69 @@
     renderWatchlistSignalsTable(results);
   }
 
+  // Capped, not unbounded, concurrency: each analyzeSignal call does its own live exchange +
+  // fundamentals fetch server-side, so firing every asset at once would just move the bottleneck
+  // (and risks hammering the exchange). This is still a large win over the old one-at-a-time loop
+  // since assets on different exchanges/symbols no longer wait on each other at all.
+  const WATCHLIST_SIGNAL_CONCURRENCY = 5;
+
   async function generateSignalsForWatchlist() {
-    if (watchlistCache.length === 0) {
+    const entries = await getSignalsSettingEntries();
+    if (entries.length === 0) {
       toast('Your Signals Setting is empty — add an asset first.', 'error');
       return;
     }
     const btn = document.getElementById('generate-watchlist-signals-btn');
     btn.disabled = true;
     const mode = ModeSwitcher.getMode();
-    const results = [];
-    for (let i = 0; i < watchlistCache.length; i++) {
-      const asset = watchlistCache[i];
-      btn.textContent = `Generating... (${i + 1}/${watchlistCache.length})`;
-      try {
-        const signal = await Api.analyzeSignal({
-          symbol: asset.symbol, exchange: asset.exchange, timeframe: asset.default_timeframe,
-          assetType: asset.asset_type, mode, strategyId: asset.strategy_id,
-        });
-        results.push({ asset, signal });
-      } catch (err) {
-        results.push({ asset, error: err.message });
+    const results = new Array(entries.length);
+    let completed = 0;
+
+    async function runOne(index) {
+      const asset = entries[index];
+      if (asset.strategy_id === LSR_STRATEGY_ID) {
+        // Skip analyzeSignal entirely — the backend would just reject it (scoringRejectionReason)
+        // since LSR isn't scoreable on demand. Show its live state-machine status instead of
+        // surfacing that rejection as a batch "error" — see loadLastWatchlistSignals()'s identical handling.
+        const { label, tsUtc } = await buildLsrStatusNotice(asset);
+        results[index] = { asset, notice: label, noticeTsUtc: tsUtc };
+      } else {
+        try {
+          const signal = await Api.analyzeSignal({
+            symbol: asset.symbol, exchange: asset.exchange, timeframe: asset.default_timeframe,
+            assetType: asset.asset_type, mode, strategyId: asset.strategy_id, market: asset.market,
+          });
+          results[index] = { asset, signal };
+        } catch (err) {
+          results[index] = { asset, error: err.message };
+        }
       }
-      renderWatchlistSignalsTable(results); // render incrementally so progress is visible
+      completed += 1;
+      btn.textContent = `Generating... (${completed}/${entries.length})`;
+      renderWatchlistSignalsTable(results.filter(Boolean)); // render incrementally so progress is visible
     }
+
+    // A small fixed-size worker pool: each worker pulls the next un-started index until none are
+    // left, so at most WATCHLIST_SIGNAL_CONCURRENCY requests are in flight at once regardless of
+    // watchlist size.
+    let nextIndex = 0;
+    async function worker() {
+      while (nextIndex < entries.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await runOne(index);
+      }
+    }
+    const workerCount = Math.min(WATCHLIST_SIGNAL_CONCURRENCY, entries.length);
+    await Promise.all(Array.from({ length: workerCount }, worker));
+
     btn.disabled = false;
     btn.textContent = 'Generate for Signals Setting';
-    const succeeded = results.filter((r) => !r.error).length;
-    toast(`Generated ${succeeded}/${results.length} signal(s).`, succeeded === results.length ? 'success' : 'error');
+    // LSR entries were never attempted (see above) — excluded from both counts so e.g. "3/3" means
+    // 3 real generations succeeded, not 3-succeeded-plus-2-skipped-counted-as-5.
+    const attempted = results.filter((r) => r.asset.strategy_id !== LSR_STRATEGY_ID);
+    const succeeded = attempted.filter((r) => !r.error).length;
+    toast(`Generated ${succeeded}/${attempted.length} signal(s).`, succeeded === attempted.length ? 'success' : 'error');
   }
 
   // ---------- real exchange credentials ----------
@@ -929,6 +1121,72 @@
     });
   }
 
+  // Which strategy/strategies opened this position — resolved server-side from the signal that
+  // triggered it (see portfolio-service.js's describeStrategyIds enrichment). A combined signal
+  // (auto-mode, majority vote across 2-3 strategies) shows every contributing strategy joined
+  // with "+", with a tooltip breaking down how each one voted; a plain manual order with no linked
+  // signal shows "-". Private copy, mirroring futures.js's identical helper — see this file's
+  // established "deliberately not shared with futures.js" convention.
+  function buildStrategyCell(p) {
+    const cell = el('td');
+    if (!p.strategies || p.strategies.length === 0) {
+      cell.textContent = '-';
+      cell.title = 'Not opened from a generated signal.';
+      return cell;
+    }
+    cell.textContent = p.strategies.map((s) => s.name).join(' + ');
+    if (p.combined_votes_json) {
+      try {
+        const votes = JSON.parse(p.combined_votes_json);
+        cell.title = `Votes — ${Object.entries(votes).map(([id, vote]) => `${strategyName(id)}: ${vote}`).join(', ')}`;
+      } catch {
+        cell.title = 'Opened from a manually generated signal.';
+      }
+    } else {
+      cell.title = 'Opened from a manually generated signal.';
+    }
+    return cell;
+  }
+
+  // The timeframe that led to this position's signal — private copy, mirroring futures.js's
+  // identical helper (see its comment for the LSR composite-timeframe explanation).
+  function buildTimeframeCell(p) {
+    return el('td', {}, p.timeframe || '-');
+  }
+
+  // Full raw JSON for one position, hidden by default, toggled per-row by the "Raw" button built
+  // in buildRawToggleCell — private copy, mirroring futures.js's identical helper.
+  function buildRawRow(p, colSpan) {
+    const row = el('tr', { class: 'position-raw-row' });
+    row.hidden = true;
+    const cell = el('td', { colspan: String(colSpan) });
+    cell.appendChild(el('pre', { class: 'raw-output' }, JSON.stringify(p, null, 2)));
+    row.appendChild(cell);
+    return row;
+  }
+
+  function buildRawToggleCell(rawRow) {
+    const cell = el('td');
+    const btn = el('button', { type: 'button', class: 'raw-toggle-btn' }, 'Raw');
+    btn.addEventListener('click', () => { rawRow.hidden = !rawRow.hidden; });
+    cell.appendChild(btn);
+    return cell;
+  }
+
+  const POSITION_TABLE_COLUMN_COUNT = 12; // Symbol..Take (9) + Strategy + Timeframe + Raw-toggle
+
+  // A trailing position's stop_loss is a live-ratcheted value, not the fixed number you set at
+  // order time — the suffix + tooltip makes that visible instead of it looking identical to a
+  // plain stop-loss. high-water-mark is the best price seen since entry it's trailing behind.
+  function buildStopCell(p) {
+    const cell = el('td', {}, fmtPrice(p.stop_loss));
+    if (p.trailing_percent) {
+      cell.appendChild(el('span', {}, ` (trailing ${fmt(p.trailing_percent, 2)}%)`));
+      cell.title = `Trailing stop: ${fmt(p.trailing_percent, 2)}% behind the high-water mark of ${fmtPrice(p.trailing_high_water_mark)} — moves in your favor only, never loosens.`;
+    }
+    return cell;
+  }
+
   function renderPositionsTable(body, positions) {
     clear(body);
     positions.forEach((p) => {
@@ -936,12 +1194,15 @@
       const unrealizedCell = el('td', {}, p.unrealizedPnl != null ? fmt(p.unrealizedPnl) : '-');
       if (p.unrealizedPnl > 0) unrealizedCell.className = 'text-positive';
       else if (p.unrealizedPnl < 0) unrealizedCell.className = 'text-negative';
+      const rawRow = buildRawRow(p, POSITION_TABLE_COLUMN_COUNT);
       row.append(
         el('td', {}, p.symbol), el('td', {}, p.exchange || '-'), el('td', {}, p.side), el('td', {}, fmt(p.qty, 6)),
         el('td', {}, fmtPrice(p.entry_price)), el('td', {}, p.currentPrice != null ? fmtPrice(p.currentPrice) : '-'),
-        unrealizedCell, el('td', {}, fmtPrice(p.stop_loss)), el('td', {}, fmtPrice(p.take_profit))
+        unrealizedCell, buildStopCell(p), el('td', {}, fmtPrice(p.take_profit)),
+        buildStrategyCell(p), buildTimeframeCell(p), buildRawToggleCell(rawRow)
       );
       body.appendChild(row);
+      body.appendChild(rawRow);
     });
   }
 
@@ -953,12 +1214,34 @@
     clear(body);
     orders.forEach((o) => {
       const row = el('tr');
+      const strategyLabel = o.strategies && o.strategies.length > 0 ? o.strategies.map((s) => s.name).join(' + ') : '-';
       row.append(
-        el('td', {}, formatTimestamp(o.created_at_utc)), el('td', {}, o.symbol || '-'), el('td', {}, orderTypeLabel(o.order_type)), el('td', {}, o.side), el('td', {}, fmt(o.qty, 6)),
+        el('td', {}, formatTimestamp(o.created_at_utc)), el('td', {}, o.symbol || '-'), el('td', {}, orderTypeLabel(o.order_type)), el('td', {}, o.side),
+        el('td', {}, strategyLabel), el('td', {}, o.timeframe || '-'), el('td', {}, fmt(o.qty, 6)),
         el('td', {}, fmtPrice(o.price)), el('td', {}, o.status), el('td', {}, o.reject_reason || '')
       );
       body.appendChild(row);
     });
+  }
+
+  // Complete round-trip trade history — every CLOSED position, most recent first, with which
+  // strategy/timeframe opened it and its realized profit/loss (see portfolio-controller.js#getTradeHistory).
+  function renderTradeHistoryTable(body, emptyEl, trades) {
+    clear(body);
+    trades.forEach((t) => {
+      const row = el('tr');
+      const pnlCell = el('td', {}, t.realized_pnl != null ? fmt(t.realized_pnl) : '-');
+      if (t.realized_pnl > 0) pnlCell.className = 'text-positive';
+      else if (t.realized_pnl < 0) pnlCell.className = 'text-negative';
+      const strategyLabel = t.strategies && t.strategies.length > 0 ? t.strategies.map((s) => s.name).join(' + ') : '-';
+      row.append(
+        el('td', {}, formatTimestamp(t.opened_at_utc)), el('td', {}, formatTimestamp(t.closed_at_utc)),
+        el('td', {}, t.symbol), el('td', {}, t.side), el('td', {}, strategyLabel), el('td', {}, t.timeframe || '-'),
+        el('td', {}, fmt(t.qty, 6)), el('td', {}, fmtPrice(t.entry_price)), el('td', {}, fmtPrice(t.exit_price)), pnlCell
+      );
+      body.appendChild(row);
+    });
+    if (emptyEl) emptyEl.hidden = trades.length > 0;
   }
 
   // Limit/Stop/OCO orders awaiting a fill or trigger — separate from Order History's
@@ -1051,6 +1334,9 @@
 
       const pendingOrders = await Api.listOrders(mode, 50, 'pending');
       renderPendingOrdersTable(document.getElementById(`${mode}-pending-orders-body`), pendingOrders, mode);
+
+      const trades = await Api.getTradeHistory(mode, 50);
+      renderTradeHistoryTable(document.getElementById(`${mode}-trade-history-body`), document.getElementById(`${mode}-trade-history-empty`), trades);
     } catch (err) {
       toast(`Failed to load ${mode} portfolio: ${err.message}`, 'error');
     }
@@ -1076,7 +1362,7 @@
     }
   }
 
-  async function submitOrder(mode, side, stopLoss, takeProfit, qty, orderType, limitPrice, triggerPrice) {
+  async function submitOrder(mode, side, stopLoss, takeProfit, qty, orderType, limitPrice, triggerPrice, trailingPercent) {
     // qty is optional — omitted, the risk pipeline auto-sizes the position from Max Risk Per
     // Trade (the usual case); supplied, it trades that exact amount instead, still capped so it
     // can never risk more than that same max (see validate-trade.js's RISK_AMOUNT_TOO_LARGE).
@@ -1089,7 +1375,7 @@
     if (!confirmation.confirmed) return;
 
     try {
-      const body = { symbol: currentAsset.symbol, exchange: currentAsset.exchange, side, stopLoss, takeProfit, qty, orderType, limitPrice, triggerPrice };
+      const body = { symbol: currentAsset.symbol, exchange: currentAsset.exchange, side, stopLoss, takeProfit, qty, orderType, limitPrice, triggerPrice, trailingPercent };
       const result = mode === 'real'
         ? await Api.placeRealOrder({ ...body, confirmationText: confirmation.confirmationText })
         : await Api.placeDemoOrder(body);
@@ -1138,7 +1424,8 @@
       const qty = form.qty.value ? Number(form.qty.value) : undefined;
       const limitPrice = form.limitPrice.value ? Number(form.limitPrice.value) : undefined;
       const triggerPrice = form.triggerPrice.value ? Number(form.triggerPrice.value) : undefined;
-      await submitOrder(mode, side, stopLoss, takeProfit, qty, orderType, limitPrice, triggerPrice);
+      const trailingPercent = form.trailingPercent.value ? Number(form.trailingPercent.value) : undefined;
+      await submitOrder(mode, side, stopLoss, takeProfit, qty, orderType, limitPrice, triggerPrice, trailingPercent);
     });
   }
 
@@ -1281,8 +1568,6 @@
       netPnlEl.textContent = netPnl === null ? '-' : fmt(netPnl);
       netPnlEl.className = `status-bar__value ${netPnl > 0 ? 'text-positive' : netPnl < 0 ? 'text-negative' : ''}`;
 
-      document.getElementById('status-open-positions').textContent = String(portfolio.openPositions.length);
-
       const globalStopped = !!status.emergencyStop?.global?.active;
       const modeStopped = !!status.emergencyStop?.[mode]?.active;
       const emergencyEl = document.getElementById('status-emergency');
@@ -1297,6 +1582,57 @@
         emergencyEl.className = 'status-bar__value status-emergency--active';
       }
     } catch (err) {
+      // Non-critical, always-on background refresh — don't spam toasts on transient failures.
+    }
+    refreshOpenPositionsSummary(mode);
+  }
+
+  function renderOpenPositionsSummaryRow(market, p) {
+    const row = el('tr');
+    const unrealizedCell = el('td', {}, p.unrealizedPnl != null ? fmt(p.unrealizedPnl) : '-');
+    if (p.unrealizedPnl > 0) unrealizedCell.className = 'text-positive';
+    else if (p.unrealizedPnl < 0) unrealizedCell.className = 'text-negative';
+    row.append(
+      el('td', {}, market), el('td', {}, p.symbol), el('td', {}, p.exchange || '-'), el('td', {}, p.side),
+      el('td', {}, p.leverage != null ? `${p.leverage}x` : '-'), el('td', {}, fmt(p.qty, 6)),
+      el('td', {}, fmtPrice(p.entry_price)), el('td', {}, p.currentPrice != null ? fmtPrice(p.currentPrice) : '-'),
+      unrealizedCell, el('td', {}, fmtPrice(p.stop_loss)), el('td', {}, fmtPrice(p.take_profit)),
+    );
+    return row;
+  }
+
+  // Combines Spot + Futures open positions for the current mode into one at-a-glance table above
+  // the tabs, so switching between Demo/Real Trading, Watchlist, etc. doesn't require flipping
+  // tabs just to see everything that's open. Also drives the top status bar's "Open Positions"
+  // count — previously spot-only (just portfolio.openPositions.length from refreshStatusBar),
+  // which under-reported whenever futures positions were open too. Real futures is only queried
+  // when unlocked — Api.getFuturesPortfolio('real') 403s otherwise, same guard as
+  // getSignalsSettingEntries().
+  async function refreshOpenPositionsSummary(mode) {
+    const badge = document.getElementById('open-positions-summary-mode-badge');
+    badge.textContent = mode.toUpperCase();
+    badge.className = `mode-badge mode-badge--${mode}`;
+
+    const body = document.getElementById('open-positions-summary-body');
+    const emptyEl = document.getElementById('open-positions-summary-empty');
+    try {
+      const spotPortfolio = await Api.getPortfolio(mode);
+      let futuresPositions = [];
+      if (mode !== 'real' || ModeSwitcher.isRealUnlocked()) {
+        try {
+          const futuresPortfolio = await Api.getFuturesPortfolio(mode);
+          futuresPositions = futuresPortfolio.openPositions;
+        } catch {
+          // Futures portfolio unavailable — still show spot positions rather than nothing.
+        }
+      }
+      clear(body);
+      spotPortfolio.openPositions.forEach((p) => body.appendChild(renderOpenPositionsSummaryRow('Spot', p)));
+      futuresPositions.forEach((p) => body.appendChild(renderOpenPositionsSummaryRow('Futures', p)));
+      const total = spotPortfolio.openPositions.length + futuresPositions.length;
+      emptyEl.hidden = total > 0;
+      document.getElementById('status-open-positions').textContent = String(total);
+    } catch {
       // Non-critical, always-on background refresh — don't spam toasts on transient failures.
     }
   }
@@ -1398,14 +1734,17 @@
   function init() {
     initTabs();
     ModeSwitcher.init();
-    ModeSwitcher.onChange((mode) => { loadRiskSettings(mode); refreshStatusBar(); });
+    // The Futures half of the Signals Setting Results table depends on which mode is selected
+    // (Demo/Real Futures Signals Setting are separate lists) — re-load it on every mode switch,
+    // not just when the Spot watchlist itself changes.
+    ModeSwitcher.onChange((mode) => { loadRiskSettings(mode); refreshStatusBar(); loadLastWatchlistSignals(); });
 
     document.getElementById('load-asset-btn').addEventListener('click', loadAsset);
     document.getElementById('try-tradingview-btn').addEventListener('click', loadTradingViewChart);
     document.getElementById('use-builtin-chart-btn').addEventListener('click', loadBuiltinChart);
-    document.getElementById('generate-signal-btn').addEventListener('click', generateSignal);
     document.getElementById('generate-watchlist-signals-btn').addEventListener('click', generateSignalsForWatchlist);
     document.getElementById('add-watchlist-btn').addEventListener('click', addCurrentAssetToWatchlist);
+    document.getElementById('add-to-watchlist-btn').addEventListener('click', addAssetToWatchList);
     document.getElementById('enable-all-autotrade-btn').addEventListener('click', enableAutoTradeForAll);
 
     const symbolInput = document.getElementById('symbol-input');
@@ -1457,6 +1796,7 @@
     loadRealCredentialsExchangeOptions().then(refreshRealCredentialsStatus);
     loadRiskSettings(ModeSwitcher.getMode());
     refreshStatusBar();
+    refreshWatchList();
 
     // Light polling so prices/indicators don't go stale while the dashboard tab is open.
     setInterval(() => {
@@ -1467,6 +1807,14 @@
 
     // Status bar is always visible regardless of active tab, so it polls independently.
     setInterval(refreshStatusBar, 15_000);
+
+    // Keeps Signals Setting Results current with whatever the scheduler/auto-trader just
+    // persisted, without waiting for a tab switch or list mutation to trigger a reload.
+    setInterval(() => {
+      if (document.getElementById('tab-watchlist').classList.contains('tab-panel--active')) {
+        loadLastWatchlistSignals();
+      }
+    }, 60_000);
   }
 
   window.Dashboard = { init, switchToTab };

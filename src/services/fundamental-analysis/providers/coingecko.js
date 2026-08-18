@@ -6,12 +6,42 @@ const fundamentalsCacheRepository = require('../../../database/repositories/fund
 const BASE_URL = 'https://api.coingecko.com/api/v3';
 const ID_RESOLUTION_FIELD_GROUP = 'coingecko-id-resolution';
 const ID_RESOLUTION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // ticker->id mappings are effectively static
+const RATE_LIMIT_BASE_BACKOFF_MS = 2000; // used only when a 429 response has no Retry-After header
 
 function unavailable(reason) {
   return { value: 'unavailable', source: 'coingecko', unavailableReason: reason };
 }
 
-async function fetchJson(url, timeoutMs) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+class HttpStatusError extends Error {
+  constructor(status, retryAfterMs) {
+    super(`CoinGecko request failed: HTTP ${status}`);
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+// Serializes every outbound CoinGecko call behind a minimum spacing (config.coingeckoMinIntervalMs)
+// regardless of how many symbols get scored concurrently in one scan cycle — a scheduler running
+// through a full watchlist previously fired one request per symbol back-to-back, bursting straight
+// through CoinGecko's free-tier rate limit and 429-ing whichever symbols landed at the tail end.
+let requestChain = Promise.resolve(0);
+
+function acquireSlot() {
+  const slot = requestChain.then(async (lastStartedAt) => {
+    const wait = Math.max(0, lastStartedAt + config.coingeckoMinIntervalMs - Date.now());
+    if (wait > 0) await sleep(wait);
+    return Date.now();
+  });
+  requestChain = slot;
+  return slot;
+}
+
+async function attemptFetch(url, timeoutMs) {
+  await acquireSlot();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -20,12 +50,34 @@ async function fetchJson(url, timeoutMs) {
     if (config.fundamentalApiKey) headers['x-cg-demo-api-key'] = config.fundamentalApiKey;
     const res = await fetch(url, { signal: controller.signal, headers });
     if (!res.ok) {
-      throw new Error(`CoinGecko request failed: HTTP ${res.status}`);
+      const retryAfterSec = Number(res.headers.get('retry-after'));
+      const retryAfterMs = Number.isFinite(retryAfterSec) && retryAfterSec >= 0 ? retryAfterSec * 1000 : null;
+      throw new HttpStatusError(res.status, retryAfterMs);
     }
     return await res.json();
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Retries 429s and 5xx/network failures with backoff (honoring a 429's Retry-After header when
+ *  present); a non-429 4xx (bad request, not found) fails immediately since retrying can't help. */
+async function fetchJson(url, timeoutMs, { maxRetries = config.maxApiRetries } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await attemptFetch(url, timeoutMs);
+    } catch (err) {
+      lastError = err;
+      const isRetryable = !(err instanceof HttpStatusError) || err.status === 429 || err.status >= 500;
+      if (!isRetryable || attempt === maxRetries) throw err;
+      const backoffMs = err instanceof HttpStatusError && err.retryAfterMs != null
+        ? err.retryAfterMs
+        : RATE_LIMIT_BASE_BACKOFF_MS * 2 ** attempt;
+      await sleep(backoffMs);
+    }
+  }
+  throw lastError;
 }
 
 /**

@@ -23,10 +23,15 @@ function insertPosition(mode, userId, position) {
   const table = positionsTable(mode);
   const result = db
     .prepare(
-      `INSERT INTO ${table} (user_id, symbol, exchange, side, qty, entry_price, stop_loss, take_profit, opened_at_utc, status)
-       VALUES (@userId, @symbol, @exchange, @side, @qty, @entryPrice, @stopLoss, @takeProfit, @openedAtUtc, 'open')`
+      `INSERT INTO ${table} (user_id, symbol, exchange, side, qty, entry_price, stop_loss, take_profit, opened_at_utc, status, signal_id, strategy_id, combined_strategy_ids_json, combined_votes_json, source, timeframe, trailing_percent, trailing_high_water_mark)
+       VALUES (@userId, @symbol, @exchange, @side, @qty, @entryPrice, @stopLoss, @takeProfit, @openedAtUtc, 'open', @signalId, @strategyId, @combinedStrategyIdsJson, @combinedVotesJson, @source, @timeframe, @trailingPercent, @trailingHighWaterMark)`
     )
-    .run({ exchange: null, ...position, userId });
+    .run({
+      exchange: null,
+      signalId: null, strategyId: null, combinedStrategyIdsJson: null, combinedVotesJson: null, source: 'manual', timeframe: null,
+      trailingPercent: null, trailingHighWaterMark: null,
+      ...position, userId,
+    });
   return db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(result.lastInsertRowid);
 }
 
@@ -85,6 +90,16 @@ function listClosedPositions(mode, userId, { limit = 50 } = {}) {
   return db.prepare(`SELECT * FROM ${table} WHERE user_id = ? AND status = 'closed' ORDER BY closed_at_utc DESC LIMIT ?`).all(userId, limit);
 }
 
+/** Ratchets a trailing-stop position's stop_loss/high-water-mark — called every position-risk-
+ *  watcher.js cycle for positions with trailing_percent set. Ownership-scoped like getPosition;
+ *  updates nothing if the id/userId pair doesn't match an existing row. */
+function updateTrailingStop(mode, userId, id, { stopLoss, highWaterMark }) {
+  const db = getDb();
+  const table = positionsTable(mode);
+  db.prepare(`UPDATE ${table} SET stop_loss = ?, trailing_high_water_mark = ? WHERE id = ? AND user_id = ?`).run(stopLoss, highWaterMark, id, userId);
+  return getPosition(mode, userId, id);
+}
+
 module.exports = {
   listOpenPositions,
   listAllOpenPositions,
@@ -96,4 +111,5 @@ module.exports = {
   sumAllRealizedPnl,
   countClosedByOutcome,
   listClosedPositions,
+  updateTrailingStop,
 };
