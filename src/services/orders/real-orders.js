@@ -104,7 +104,7 @@ function effectivePriceFor(orderType, limitPrice, triggerPrice) {
  * re-read from config on every call rather than cached at boot. There is no fallback path to
  * demo-orders.js: a rejection here is a rejection, never a silent simulated fill.
  */
-async function placeRealOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, orderType, limitPrice, triggerPrice, strategyId, timeframe, trailingPercent }) {
+async function placeRealOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, orderType, limitPrice, triggerPrice, strategyId, timeframe, trailingPercent, reason }) {
   const id = uuidv4();
   side = side.toLowerCase();
   orderType = (orderType || 'market').toLowerCase();
@@ -160,7 +160,7 @@ async function placeRealOrder({ userId, symbol, exchange, side, stopLoss, takePr
   }
 
   if (side === 'sell') {
-    return closeRealPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId });
+    return closeRealPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, reason });
   }
   if (side !== 'buy') {
     return persistRejected({ id, userId, symbol, side, stopLoss, takeProfit, price, reasonCode: 'INVALID_SIDE', message: `Unknown order side "${side}"`, idempotencyKey, signalId });
@@ -259,7 +259,7 @@ async function placeRealOrder({ userId, symbol, exchange, side, stopLoss, takePr
   return order;
 }
 
-async function closeRealPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId }) {
+async function closeRealPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, reason }) {
   const openPosition = positionsRepository.findOpenPositionBySymbol(MODE, userId, symbol);
   if (!openPosition) {
     return persistRejected({ id, userId, symbol, side: 'sell', price, reasonCode: 'NO_OPEN_POSITION_TO_CLOSE', message: `No open Real position for ${symbol}.`, idempotencyKey, signalId });
@@ -282,7 +282,7 @@ async function closeRealPosition({ id, userId, symbol, exchange, price, idempote
     responseJson: JSON.stringify(exchangeResponse),
   });
 
-  const { realizedPnl } = portfolioService.closePosition(MODE, userId, openPosition.id, price);
+  const { realizedPnl } = portfolioService.closePosition(MODE, userId, openPosition.id, price, reason ?? 'manual');
 
   const order = ordersRepository.insertOrder(MODE, userId, {
     id,
@@ -464,7 +464,9 @@ function finalizeRealSellFill(order, fillPrice, exchangeResponse) {
     // marking our own row filled; there's no position to close a second time.
     return ordersRepository.updateOrderStatus(MODE, userId, order.id, { status: 'filled', filledAtUtc: new Date().toISOString(), exchangeOrderId: order.exchange_order_id, price: fillPrice });
   }
-  const { realizedPnl } = portfolioService.closePosition(MODE, userId, openPosition.id, fillPrice);
+  // Same order_type -> reason convention as demo-orders.js's finalizeDemoSellFill.
+  const reason = order.order_type === 'stop_market' ? 'stop_loss' : 'take_profit';
+  const { realizedPnl } = portfolioService.closePosition(MODE, userId, openPosition.id, fillPrice, reason);
   realAuditLogRepository.insertAuditEntry({ userId, orderId: order.id, requestJson: JSON.stringify({ fetchOrderConfirmedFill: true }), responseJson: JSON.stringify(exchangeResponse) });
   const updated = ordersRepository.updateOrderStatus(MODE, userId, order.id, { status: 'filled', filledAtUtc: new Date().toISOString(), realizedPnl, exchangeOrderId: order.exchange_order_id, price: fillPrice });
   logger.info('real-orders', `Real ${order.order_type} SELL filled for ${order.symbol}`, { realizedPnl, positionId: openPosition.id }, MODE);

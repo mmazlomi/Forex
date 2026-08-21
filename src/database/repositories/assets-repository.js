@@ -94,12 +94,14 @@ function setTimeframe(userId, symbol, exchange, defaultTimeframe) {
 // Per-asset default trailing-stop distance (percent of price), inherited by a position opened
 // from this asset (manually via "Trade from Signal", or by AI Auto-Trade) unless the order itself
 // explicitly overrides it. Null (the default) means trailing is off — same "absence = off"
-// convention as every other opt-in flag on this table.
-function setTrailingPercent(userId, symbol, exchange, trailingPercent) {
+// convention as every other opt-in flag on this table. trailingMode 'atr' means trailingPercent is
+// ignored (should be passed as null) — see risk/atr-trailing.js — and a fresh volatility-based
+// percent is computed each time a position is opened from this asset instead.
+function setTrailingPercent(userId, symbol, exchange, trailingPercent, trailingMode = 'fixed') {
   const db = getDb();
   const result = db
-    .prepare('UPDATE assets SET trailing_percent = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
-    .run(trailingPercent, userId, symbol, exchange);
+    .prepare('UPDATE assets SET trailing_percent = ?, trailing_mode = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
+    .run(trailingPercent, trailingMode, userId, symbol, exchange);
   if (result.changes === 0) return null;
   return getAsset(userId, symbol, exchange);
 }

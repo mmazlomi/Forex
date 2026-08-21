@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS assets (
   strategy_selection_updated_at_utc TEXT,
   real_auto_trade_enabled INTEGER NOT NULL DEFAULT 0,
   trailing_percent REAL,
+  trailing_mode TEXT NOT NULL DEFAULT 'fixed',
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -200,7 +201,9 @@ CREATE TABLE IF NOT EXISTS demo_positions (
   source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
   timeframe TEXT,
   trailing_percent REAL,
-  trailing_high_water_mark REAL
+  trailing_high_water_mark REAL,
+  initial_stop_loss REAL,
+  exit_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS demo_orders (
@@ -256,7 +259,9 @@ CREATE TABLE IF NOT EXISTS real_positions (
   source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
   timeframe TEXT,
   trailing_percent REAL,
-  trailing_high_water_mark REAL
+  trailing_high_water_mark REAL,
+  initial_stop_loss REAL,
+  exit_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS real_orders (
@@ -329,7 +334,9 @@ CREATE TABLE IF NOT EXISTS demo_futures_positions (
   source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
   timeframe TEXT,
   trailing_percent REAL,
-  trailing_high_water_mark REAL
+  trailing_high_water_mark REAL,
+  initial_stop_loss REAL,
+  exit_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS demo_futures_orders (
@@ -385,7 +392,9 @@ CREATE TABLE IF NOT EXISTS real_futures_positions (
   source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
   timeframe TEXT,
   trailing_percent REAL,
-  trailing_high_water_mark REAL
+  trailing_high_water_mark REAL,
+  initial_stop_loss REAL,
+  exit_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS real_futures_orders (
@@ -433,6 +442,7 @@ CREATE TABLE IF NOT EXISTS demo_futures_assets (
   selected_strategy_ids_json TEXT,
   strategy_selection_updated_at_utc TEXT,
   trailing_percent REAL,
+  trailing_mode TEXT NOT NULL DEFAULT 'fixed',
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -450,6 +460,7 @@ CREATE TABLE IF NOT EXISTS real_futures_assets (
   selected_strategy_ids_json TEXT,
   strategy_selection_updated_at_utc TEXT,
   trailing_percent REAL,
+  trailing_mode TEXT NOT NULL DEFAULT 'fixed',
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -665,6 +676,32 @@ function migrateAddTrailingStopColumns(db, table) {
   if (!names.has('trailing_high_water_mark')) db.exec(`ALTER TABLE ${table} ADD COLUMN trailing_high_water_mark REAL`);
 }
 
+// One-time migration for databases created before the trade-history view showed both the
+// as-opened risk levels and how a position actually closed: demo_positions/real_positions/
+// demo_futures_positions/real_futures_positions gain initial_stop_loss (a snapshot of stop_loss
+// taken once at open time — stop_loss itself keeps getting overwritten by trailing ratchets, so
+// without this the original stop is lost the moment trailing moves it even once) and exit_reason
+// ('stop_loss' | 'take_profit' | 'signal' | 'manual', null for still-open or pre-migration closed
+// rows where the reason was never recorded).
+function migrateAddExitDetailColumns(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  const names = new Set(columns.map((c) => c.name));
+  let justAddedInitialStopLoss = false;
+  if (!names.has('initial_stop_loss')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN initial_stop_loss REAL`);
+    justAddedInitialStopLoss = true;
+  }
+  if (!names.has('exit_reason')) db.exec(`ALTER TABLE ${table} ADD COLUMN exit_reason TEXT`);
+
+  // Best-effort backfill for rows that predate this column: stop_loss is the closest available
+  // approximation of the original value (exact for a row that was never trailed; already-trailed
+  // rows had their true initial stop overwritten before this column existed, so this is the best
+  // information left, not a fabrication).
+  if (justAddedInitialStopLoss) {
+    db.exec(`UPDATE ${table} SET initial_stop_loss = stop_loss WHERE initial_stop_loss IS NULL`);
+  }
+}
+
 // Companion to migrateAddTrailingStopColumns above: the per-asset trailing_percent DEFAULT a
 // manually- or auto-trader-opened position inherits from its watchlist row (assets/
 // demo_futures_assets/real_futures_assets) if the order itself doesn't explicitly override it —
@@ -673,6 +710,18 @@ function migrateAddAssetTrailingColumn(db, table) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
   if (!columns.some((c) => c.name === 'trailing_percent')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN trailing_percent REAL`);
+  }
+}
+
+// One-time migration for databases created before ATR-based auto trailing existed: assets/
+// demo_futures_assets/real_futures_assets gain trailing_mode ('fixed' = use the stored
+// trailing_percent as-is, matching every pre-existing row; 'atr' = ignore trailing_percent and
+// compute a fresh volatility-based percent — see risk/atr-trailing.js — each time a position is
+// opened from this asset).
+function migrateAddAssetTrailingModeColumn(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((c) => c.name === 'trailing_mode')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN trailing_mode TEXT NOT NULL DEFAULT 'fixed'`);
   }
 }
 
@@ -924,9 +973,11 @@ function applySchema(db) {
   for (const table of ['demo_positions', 'real_positions', 'demo_futures_positions', 'real_futures_positions']) {
     migrateAddPositionStrategyColumns(db, table);
     migrateAddTrailingStopColumns(db, table);
+    migrateAddExitDetailColumns(db, table);
   }
   for (const table of ['assets', 'demo_futures_assets', 'real_futures_assets']) {
     migrateAddAssetTrailingColumn(db, table);
+    migrateAddAssetTrailingModeColumn(db, table);
   }
 }
 

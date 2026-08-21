@@ -70,7 +70,9 @@ const Api = (() => {
     setAssetStrategyMode: (symbol, exchange, mode) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/strategy-mode`, { query: { exchange }, body: { mode } }),
     // trailingPercent: number to set, or null to disable — the default a position opened from
     // this asset (manually or by AI Auto-Trade) inherits unless the order itself overrides it.
-    setAssetTrailingPercent: (symbol, exchange, trailingPercent) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/trailing`, { query: { exchange }, body: { trailingPercent } }),
+    // trailingMode: 'fixed' (default, use trailingPercent as-is) or 'atr' (auto-computed from
+    // volatility each time a position opens — pass trailingPercent as null in that case).
+    setAssetTrailingPercent: (symbol, exchange, trailingPercent, trailingMode = 'fixed') => request('PUT', `api/assets/${encodeURIComponent(symbol)}/trailing`, { query: { exchange }, body: { trailingPercent, trailingMode } }),
 
     // The lightweight WatchList — separate from the assets/futures-assets Signals Setting lists
     // above. "Promote" is the one-click "Add to Signals Setting" action: it adds the symbol to
@@ -100,6 +102,7 @@ const Api = (() => {
 
     getPortfolio: (mode) => request('GET', 'api/portfolio', { query: { mode } }),
     getTradeHistory: (mode, limit) => request('GET', 'api/portfolio/history', { query: { mode, limit } }),
+    getTradingStatistics: () => request('GET', 'api/portfolio/statistics', {}),
     syncRealBalance: (symbol, exchange) => request('POST', 'api/portfolio/real/sync-balance', { body: { symbol, exchange } }),
     listOrders: (mode, limit, status) => request('GET', 'api/orders', { query: { mode, limit, status } }),
     placeDemoOrder: (body) => request('POST', 'api/orders/demo', { body }),
@@ -146,7 +149,7 @@ const Api = (() => {
     setFuturesStrategy: (mode, symbol, exchange, strategyId) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/strategy`, { query: { mode, exchange }, body: { strategyId } }),
     setFuturesTimeframe: (mode, symbol, exchange, defaultTimeframe) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/timeframe`, { query: { mode, exchange }, body: { defaultTimeframe } }),
     setFuturesStrategyMode: (mode, symbol, exchange, strategyMode) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/strategy-mode`, { query: { mode, exchange }, body: { mode: strategyMode } }),
-    setFuturesTrailingPercent: (mode, symbol, exchange, trailingPercent) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/trailing`, { query: { mode, exchange }, body: { trailingPercent } }),
+    setFuturesTrailingPercent: (mode, symbol, exchange, trailingPercent, trailingMode = 'fixed') => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/trailing`, { query: { mode, exchange }, body: { trailingPercent, trailingMode } }),
 
     getFuturesRiskSettings: (mode) => request('GET', 'api/futures/risk-settings', { query: { mode } }),
     updateFuturesRiskSettings: (mode, body) => request('PUT', 'api/futures/risk-settings', { query: { mode }, body }),

@@ -20,6 +20,9 @@ const { computeMaxRiskAmount, computePositionSize } = require('../risk/position-
 const { createRiskGuardState, recordTradeResult, canOpenNewTrade } = require('../reversal-strategy/risk-guards');
 const { createLookaheadSafeCursor } = require('../reversal-strategy/timeframe-alignment');
 const { computeExtendedMetrics } = require('./reversal-metrics');
+const { computeAllIndicators } = require('../technical-analysis');
+const { computeAdaptiveTargets } = require('../risk/adaptive-take-profit-engine');
+const { mergeConfig: mergeAdaptiveTpConfig } = require('../risk/adaptive-take-profit-config');
 const backtestRepository = require('../../database/repositories/backtest-repository');
 const logger = require('../logging/logger');
 
@@ -77,6 +80,132 @@ async function fetchReversalCandles({ symbol, exchange, startMs, endMs, market =
   return { htfCandles, signalCandles, entryCandles, htfStepMs, signalStepMs, entryStepMs, entryStartIndex };
 }
 
+// Mirrors backtest-engine.js's identical adaptive-TP helpers (see its comments for the full
+// rationale) — duplicated rather than shared, matching this file's own established "structural
+// twin, not shared code" convention (see this file's header comment), since the execution models
+// (single vs. triple timeframe, long-only vs. long+short) genuinely differ enough that a shared
+// abstraction would need as many branches as just having two files. Side-aware for LSR's
+// long+short support, unlike the spot-only engine's version.
+const ADAPTIVE_TP_TIERS = ['tp1', 'tp2', 'tp3'];
+
+/**
+ * Builds adaptive-TP fields for a new position, or null if adaptiveTpConfig wasn't supplied or
+ * the engine couldn't compute targets (fails safe — caller keeps the single fixed takeProfit).
+ * `entryIndicators` is computed by the caller on signalCandles windowed to the triggering sweep's
+ * own index (never later data) — same no-lookahead convention stop-loss.js's 'atr' model already
+ * uses for this exact setup, kept consistent here rather than windowing to a different point.
+ */
+function buildAdaptivePositionFieldsReversal({ adaptiveTpConfig, entryPrice, side, stopLoss, entryIndicators }) {
+  if (!adaptiveTpConfig) return null;
+  const mergedConfig = mergeAdaptiveTpConfig(adaptiveTpConfig);
+  const result = computeAdaptiveTargets({
+    entryPrice,
+    side,
+    atr: entryIndicators.atr.status === 'ok' ? entryIndicators.atr.value : null,
+    atrPercent: entryIndicators.atr.status === 'ok' ? (entryIndicators.atr.value / entryPrice) * 100 : null,
+    stopLoss,
+    trendStrength: entryIndicators.adx,
+    marketStructure: entryIndicators.supportResistance,
+    volumeCondition: entryIndicators.volumeAnalysis,
+    config: mergedConfig,
+  });
+  if (result.TP1 === null) return null;
+
+  return {
+    tp1: result.TP1, tp2: result.TP2, tp3: result.TP3,
+    partialExitPercentages: result.partialExitPercentages,
+    recommendedTrailingMultiplier: result.recommendedTrailingMultiplier,
+    entryAtr: entryIndicators.atr.status === 'ok' ? entryIndicators.atr.value : null,
+    filledTiers: new Set(),
+    trailingActive: false,
+    trailingStop: null,
+    highWaterMark: entryPrice, // ratchets up (long) or down (short) from here once trailing activates
+  };
+}
+
+function realizePartialExitReversal({ position, symbol, exitPrice, qty, exitReason, tsUtc, feePercent, dirMult }) {
+  const exitValue = exitPrice * qty;
+  const grossPnl = dirMult * (exitPrice - position.entryPrice) * qty;
+  const fee = applyFee(exitValue, feePercent);
+  const pnl = grossPnl - fee;
+  position.qty -= qty;
+  return {
+    trade: {
+      symbol, side: position.direction === 'bullish' ? 'long' : 'short', entryPrice: position.entryPrice, exitPrice, qty,
+      enteredAtUtc: position.entryTsUtc, exitedAtUtc: tsUtc, pnl, exitReason,
+      signalId: null, sweepIndex: position.sweep.sweepIndex, chochLevel: position.chochLevel.price,
+      stopLoss: position.stopLoss, takeProfit: position.tp3,
+    },
+    cashDelta: pnl,
+  };
+}
+
+/** Side-aware version of backtest-engine.js's checkAdaptiveExits — see its comments for the
+ *  shape/reasoning; the only real difference is direction-awareness (a short's tiers sit BELOW
+ *  entry and its stop/trailing-stop condition is bar.high, mirroring bullish throughout). */
+function checkAdaptiveExitsReversal({ position, bar, symbol, feePercent, slippagePercent }) {
+  const isBullish = position.direction === 'bullish';
+  const dirMult = isBullish ? 1 : -1;
+  const producedTrades = [];
+  let cashDelta = 0;
+  const effectiveStop = position.trailingActive ? position.trailingStop : position.stopLoss;
+
+  const stopHit = isBullish ? bar.low <= effectiveStop : bar.high >= effectiveStop;
+  if (stopHit) {
+    const exitPrice = effectiveStop * (1 + (isBullish ? -1 : 1) * (slippagePercent / 100));
+    const { trade, cashDelta: delta } = realizePartialExitReversal({
+      position, symbol, exitPrice, qty: position.qty, exitReason: position.trailingActive ? 'trailing_stop' : 'stop_loss',
+      tsUtc: new Date(bar.tsUtc).toISOString(), feePercent, dirMult,
+    });
+    producedTrades.push(trade);
+    cashDelta += delta;
+    return { producedTrades, cashDelta, closed: true };
+  }
+
+  for (const tier of ADAPTIVE_TP_TIERS) {
+    if (position.qty <= 0) break;
+    if (position.filledTiers.has(tier)) continue;
+    const tierPrice = position[tier];
+    const tierHit = isBullish ? bar.high >= tierPrice : bar.low <= tierPrice;
+    if (!tierHit) continue;
+
+    position.filledTiers.add(tier);
+    const tierQty = position.originalQty * (position.partialExitPercentages[tier] / 100);
+    const clampedQty = Math.min(tierQty, position.qty);
+    const exitPrice = tierPrice * (1 + (isBullish ? -1 : 1) * (slippagePercent / 100));
+    const exitReasonMap = { tp1: 'take_profit_1', tp2: 'take_profit_2', tp3: 'take_profit_3' };
+    const { trade, cashDelta: delta } = realizePartialExitReversal({
+      position, symbol, exitPrice, qty: clampedQty, exitReason: exitReasonMap[tier],
+      tsUtc: new Date(bar.tsUtc).toISOString(), feePercent, dirMult,
+    });
+    producedTrades.push(trade);
+    cashDelta += delta;
+
+    if (tier === 'tp1' && !position.trailingActive) {
+      position.trailingActive = true;
+      position.highWaterMark = isBullish ? Math.max(position.highWaterMark, bar.high) : Math.min(position.highWaterMark, bar.low);
+      position.trailingStop = isBullish
+        ? position.highWaterMark - position.entryAtr * position.recommendedTrailingMultiplier
+        : position.highWaterMark + position.entryAtr * position.recommendedTrailingMultiplier;
+    }
+  }
+
+  const closed = position.qty <= position.originalQty * 1e-5;
+  if (position.trailingActive && !closed) {
+    if (isBullish) {
+      position.highWaterMark = Math.max(position.highWaterMark, bar.high);
+      const candidateStop = position.highWaterMark - position.entryAtr * position.recommendedTrailingMultiplier;
+      if (candidateStop > position.trailingStop) position.trailingStop = candidateStop; // never loosens
+    } else {
+      position.highWaterMark = Math.min(position.highWaterMark, bar.low);
+      const candidateStop = position.highWaterMark + position.entryAtr * position.recommendedTrailingMultiplier;
+      if (candidateStop < position.trailingStop) position.trailingStop = candidateStop; // never loosens
+    }
+  }
+
+  return { producedTrades, cashDelta, closed };
+}
+
 /**
  * The core no-look-ahead simulation loop — pure and synchronous, no network/DB access. See
  * ARCHITECTURE.md §3 for the bar-by-bar data flow this implements and §4 for exactly how each
@@ -84,7 +213,7 @@ async function fetchReversalCandles({ symbol, exchange, startMs, endMs, market =
  * only by fees, credited/debited by realized P&L on close — Phase 1 does not model leverage or a
  * margin call; see docs/reversal-strategy/IMPLEMENTATION_PLAN.md's known-limitations list).
  */
-function simulateReversalStrategy({ htfCandles, signalCandles, entryCandles, htfStepMs, signalStepMs, entryStepMs, entryStartIndex, symbol, initialCapital, feePercent, slippagePercent, config }) {
+function simulateReversalStrategy({ htfCandles, signalCandles, entryCandles, htfStepMs, signalStepMs, entryStepMs, entryStartIndex, symbol, initialCapital, feePercent, slippagePercent, config, adaptiveTpConfig }) {
   let cash = initialCapital;
   let position = null;
   let pendingEntry = null;
@@ -151,10 +280,15 @@ function simulateReversalStrategy({ htfCandles, signalCandles, entryCandles, htf
       } else if (qty && qty > 0) {
         cash -= applyFee(qty * fillPrice, feePercent);
         position = {
-          direction: pendingEntry.direction, qty, entryPrice: fillPrice,
+          direction: pendingEntry.direction, qty, originalQty: qty, entryPrice: fillPrice,
           stopLoss: pendingEntry.stopLoss, takeProfit,
           entryTsUtc: new Date(bar.tsUtc).toISOString(), sweep: pendingEntry.sweep, chochLevel: pendingEntry.chochLevel,
         };
+        const adaptiveFields = buildAdaptivePositionFieldsReversal({
+          adaptiveTpConfig, entryPrice: fillPrice, side: pendingEntry.direction === 'bullish' ? 'long' : 'short',
+          stopLoss: pendingEntry.stopLoss, entryIndicators: pendingEntry.entryIndicators,
+        });
+        if (adaptiveFields) Object.assign(position, adaptiveFields);
         riskGuardState.openTradesCount += 1;
         machine.notifyPositionOpened(position);
       } else {
@@ -166,7 +300,26 @@ function simulateReversalStrategy({ htfCandles, signalCandles, entryCandles, htf
     // 3. Manage an open position: check SL/TP against this bar's high/low. Stop-loss is checked
     //    before take-profit when a single bar could plausibly have hit both — the conservative
     //    assumption (see ARCHITECTURE.md §5), matching the existing spot engine exactly.
-    if (position) {
+    if (position && position.filledTiers) {
+      // Adaptive path — partial exits + trailing, side-aware. Risk-guard/state-machine bookkeeping
+      // (recordTradeResult, openTradesCount, notifyPositionClosed) only fires once, on the leg that
+      // FULLY closes the position, using the SUM of every leg's pnl — partial legs don't touch the
+      // risk guards or state machine at all, since the position is still open.
+      const { producedTrades, cashDelta, closed } = checkAdaptiveExitsReversal({ position, bar, symbol, feePercent, slippagePercent });
+      cash += cashDelta;
+      trades.push(...producedTrades);
+      position.realizedPnlSum = (position.realizedPnlSum || 0) + producedTrades.reduce((sum, t) => sum + t.pnl, 0);
+      if (closed) {
+        recordTradeResult(riskGuardState, { pnl: position.realizedPnlSum, closedAtTsUtc: bar.tsUtc });
+        riskGuardState.openTradesCount -= 1;
+        const lastTrade = producedTrades[producedTrades.length - 1];
+        machine.notifyPositionClosed({ exitPrice: lastTrade.exitPrice, reason: lastTrade.exitReason, pnl: position.realizedPnlSum });
+        position = null;
+      } else {
+        machine.notifyPositionManaged();
+      }
+    } else if (position) {
+      // Baseline path — untouched from before adaptiveTpConfig existed.
       let exitPrice = null;
       let exitReason = null;
       const dirMult = directionMultiplier(position.direction);
@@ -212,7 +365,10 @@ function simulateReversalStrategy({ htfCandles, signalCandles, entryCandles, htf
         if (stopLoss === null) {
           warnings.push(`Entry at ${new Date(bar.tsUtc).toISOString()} skipped: ATR stop-loss unavailable (insufficient history).`);
         } else {
-          pendingEntry = { direction: triggered.direction, stopLoss, sweep: triggered.sweep, chochLevel: triggered.chochLevel };
+          // Windowed to the sweep's own index (never later data) — same no-lookahead convention
+          // stop-loss.js's 'atr' model already uses for this exact setup, kept consistent here.
+          const entryIndicators = adaptiveTpConfig ? computeAllIndicators(signalCandles.slice(0, triggered.sweep.sweepIndex + 1)) : null;
+          pendingEntry = { direction: triggered.direction, stopLoss, sweep: triggered.sweep, chochLevel: triggered.chochLevel, entryIndicators };
         }
       }
     }
@@ -257,6 +413,7 @@ async function runReversalBacktest({
   feePercent = 0.1,
   slippagePercent = 0.05,
   configOverrides = {},
+  adaptiveTpConfig,
 }) {
   const config = mergeConfig(configOverrides);
   const configErrors = validateConfig(config);
@@ -278,7 +435,7 @@ async function runReversalBacktest({
 
   try {
     const fetched = await fetchReversalCandles({ symbol, exchange, startMs, endMs, market, config });
-    const { trades, equityCurve, warnings } = simulateReversalStrategy({ ...fetched, symbol, initialCapital, feePercent, slippagePercent, config });
+    const { trades, equityCurve, warnings } = simulateReversalStrategy({ ...fetched, symbol, initialCapital, feePercent, slippagePercent, config, adaptiveTpConfig });
 
     // backtest_trades has no columns for sweepIndex/chochLevel (LSR-specific context, useful in
     // the in-memory/returned trade objects for the final report, but not part of the shared
@@ -313,6 +470,9 @@ module.exports = {
   runReversalBacktest,
   simulateReversalStrategy,
   fetchReversalCandles,
+  buildAdaptivePositionFieldsReversal,
+  checkAdaptiveExitsReversal,
+  realizePartialExitReversal,
   STRATEGY_ID,
   STRATEGY_NAME,
   STRATEGY_VERSION,

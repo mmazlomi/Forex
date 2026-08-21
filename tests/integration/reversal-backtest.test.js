@@ -87,6 +87,39 @@ test('simulateReversalStrategy: the proven bullish scenario produces exactly one
   assert.equal(equityCurve.length, entryCandles.length);
 });
 
+// Regression: on this exact proven scenario, adaptive mode used to compute a market-structure
+// level from the SIGNAL-decision-time window (which can be several bars before the actual fill)
+// and snap every TP tier to it even though price had already moved past that level by fill time —
+// pulling all three TP1/TP2/TP3 targets BELOW entry on a long, so a "take profit" fill actually
+// realized a loss. Fixed in adaptive-take-profit-engine.js (snapToStructure now requires the level
+// to be on the correct side of entry, plus a final wrong-side-of-entry safety clamp).
+test('simulateReversalStrategy: adaptive mode on the proven bullish scenario produces TP1<TP2<TP3, all strictly above entry, each profitable', () => {
+  const htfCandles = buildAllowingHtfCandles();
+  const htfCloseMs = htfCandles.length * FOUR_HOUR;
+
+  const rawScenario = buildBullishReversalCandles();
+  const signalCandles = withTimestamps(rawScenario, htfCloseMs, FIVE_MIN);
+  const entryCandles = signalCandles;
+
+  const config = mergeConfig({ ...SCENARIO_CONFIG_OVERRIDES, entryMode: 'retest_confirmation' });
+  const { trades, warnings } = simulateReversalStrategy({
+    htfCandles, signalCandles, entryCandles,
+    htfStepMs: FOUR_HOUR, signalStepMs: FIVE_MIN, entryStepMs: FIVE_MIN, entryStartIndex: 0,
+    symbol: 'TEST/USDT', initialCapital: 10000, feePercent: 0.1, slippagePercent: 0.05, config,
+    adaptiveTpConfig: {},
+  });
+
+  assert.ok(trades.length >= 1, `expected at least one trade; warnings: ${JSON.stringify(warnings)}`);
+  const entryPrice = trades[0].entryPrice;
+  for (const trade of trades) {
+    assert.ok(trade.exitPrice > entryPrice, `${trade.exitReason} exit (${trade.exitPrice}) must be above entry (${entryPrice})`);
+    assert.ok(trade.pnl > 0, `${trade.exitReason} must be profitable, got pnl=${trade.pnl}`);
+  }
+  if (trades.length === 3) {
+    assert.ok(trades[0].exitPrice < trades[1].exitPrice && trades[1].exitPrice < trades[2].exitPrice, 'TP1 < TP2 < TP3');
+  }
+});
+
 test('simulateReversalStrategy: no trade fires when the HTF filter never allows the setup\'s direction', () => {
   // A downtrend HTF context only allows SHORT — the bullish scenario must never fire a trade.
   const htfCandles = [];

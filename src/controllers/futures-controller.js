@@ -248,17 +248,27 @@ async function setTimeframe(req, res) {
   sendSuccess(res, asset, `Timeframe set to "${defaultTimeframe}" for ${symbol}.`);
 }
 
-// Mirrors assets-controller.js#setTrailingPercent — see its comment.
+// Mirrors assets-controller.js#setTrailingPercent — see its comment, including the 'atr' mode.
 async function setTrailingPercent(req, res) {
   const { symbol } = req.params;
   const exchange = req.query.exchange || 'kucoin';
-  const { trailingPercent } = req.body || {};
-  if (trailingPercent !== null && !(typeof trailingPercent === 'number' && trailingPercent > 0 && trailingPercent < 100)) {
+  const { trailingPercent, trailingMode = 'fixed' } = req.body || {};
+  if (!['fixed', 'atr'].includes(trailingMode)) {
+    return sendError(res, 'VALIDATION_ERROR', 'trailingMode must be "fixed" or "atr".');
+  }
+  if (trailingMode === 'atr') {
+    if (trailingPercent !== null && trailingPercent !== undefined) {
+      return sendError(res, 'VALIDATION_ERROR', 'trailingPercent must be null when trailingMode is "atr" — the distance is computed automatically.');
+    }
+  } else if (trailingPercent !== null && !(typeof trailingPercent === 'number' && trailingPercent > 0 && trailingPercent < 100)) {
     return sendError(res, 'VALIDATION_ERROR', 'trailingPercent must be a number between 0 and 100 (exclusive), or null to disable.');
   }
-  const asset = futuresAssetsRepository.setTrailingPercent(req.tradingMode, req.user.id, symbol, exchange, trailingPercent);
+  const asset = futuresAssetsRepository.setTrailingPercent(req.tradingMode, req.user.id, symbol, exchange, trailingMode === 'atr' ? null : trailingPercent, trailingMode);
   if (!asset) return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" was found on your ${req.tradingMode} watchlist.`, 404);
-  sendSuccess(res, asset, trailingPercent ? `Trailing stop set to ${trailingPercent}% for ${symbol}.` : `Trailing stop disabled for ${symbol}.`);
+  const message = trailingMode === 'atr'
+    ? `Trailing stop set to auto (ATR-based) for ${symbol}.`
+    : (trailingPercent ? `Trailing stop set to ${trailingPercent}% for ${symbol}.` : `Trailing stop disabled for ${symbol}.`);
+  sendSuccess(res, asset, message);
 }
 
 const STRATEGY_MODES = ['manual', 'auto'];

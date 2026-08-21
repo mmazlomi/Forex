@@ -59,7 +59,7 @@ const PENDING_ORDER_TYPES = ['limit', 'stop_market', 'stop_limit'];
  * of two), not an oversight — worst case it adds one poll interval (default 30s) of latency to an
  * order that would've filled instantly on a real exchange.
  */
-async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, orderType, limitPrice, triggerPrice, strategyId, timeframe, trailingPercent }) {
+async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, orderType, limitPrice, triggerPrice, strategyId, timeframe, trailingPercent, reason }) {
   const id = uuidv4();
   side = side.toLowerCase();
   orderType = (orderType || 'market').toLowerCase();
@@ -104,7 +104,7 @@ async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takePr
   }
 
   if (side === 'sell') {
-    return closeDemoPosition({ id, userId, symbol, price, idempotencyKey, signalId });
+    return closeDemoPosition({ id, userId, symbol, price, idempotencyKey, signalId, reason });
   }
 
   if (side !== 'buy') {
@@ -177,13 +177,13 @@ async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takePr
   return order;
 }
 
-function closeDemoPosition({ id, userId, symbol, price, idempotencyKey, signalId }) {
+function closeDemoPosition({ id, userId, symbol, price, idempotencyKey, signalId, reason }) {
   const openPosition = positionsRepository.findOpenPositionBySymbol(MODE, userId, symbol);
   if (!openPosition) {
     return persistRejected({ id, userId, symbol, side: 'sell', price, reasonCode: 'NO_OPEN_POSITION_TO_CLOSE', message: `No open Demo position for ${symbol} (long-only in v1 — SELL only closes an existing position).`, idempotencyKey, signalId });
   }
 
-  const { realizedPnl } = portfolioService.closePosition(MODE, userId, openPosition.id, price);
+  const { realizedPnl } = portfolioService.closePosition(MODE, userId, openPosition.id, price, reason ?? 'manual');
 
   const order = ordersRepository.insertOrder(MODE, userId, {
     id,
@@ -338,7 +338,11 @@ function finalizeDemoSellFill(order, fillPrice) {
     // this order sat pending) — nothing left to sell. Cancel rather than error.
     return cancelDemoOrder(order);
   }
-  const { realizedPnl } = portfolioService.closePosition(MODE, userId, openPosition.id, fillPrice);
+  // A resting stop_market leg (standalone or the stop half of an OCO pair) is functionally a
+  // stop-loss exit; a resting limit leg (standalone or the OCO take-profit half) is a take-profit
+  // exit — same convention position-risk-watcher.js uses for its own live-triggered closes.
+  const reason = order.order_type === 'stop_market' ? 'stop_loss' : 'take_profit';
+  const { realizedPnl } = portfolioService.closePosition(MODE, userId, openPosition.id, fillPrice, reason);
   const updated = ordersRepository.updateOrderStatus(MODE, userId, order.id, { status: 'filled', filledAtUtc: new Date().toISOString(), realizedPnl, price: fillPrice });
   logger.info('demo-orders', `Demo ${order.order_type} SELL filled for ${order.symbol}`, { realizedPnl, positionId: openPosition.id }, MODE);
   return updated;

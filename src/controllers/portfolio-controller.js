@@ -6,6 +6,7 @@ const positionsRepository = require('../database/repositories/positions-reposito
 const exchangeClientFactory = require('../services/exchanges/exchange-client-factory');
 const { resolveRealCredentials } = require('../services/exchanges/real-credentials-resolver');
 const { describeStrategyIds } = require('../services/signals/strategies');
+const tradingStatisticsService = require('../services/portfolio/trading-statistics-service');
 const { sendSuccess, sendError } = require('../utils/http-response');
 const logger = require('../services/logging/logger');
 
@@ -39,6 +40,15 @@ async function getTradeHistory(req, res) {
     strategies: describeStrategyIds(position.strategy_id, position.combined_strategy_ids_json),
   }));
   sendSuccess(res, trades);
+}
+
+// Statistics dashboard section — spans both Demo and Real, and both spot and futures, in one
+// response (unlike every other portfolio endpoint here, which is mode-scoped via requireValidMode)
+// since the whole point is comparing them side by side. See trading-statistics-service.js for the
+// aggregation itself; this is just the HTTP wrapper.
+async function getStatistics(req, res) {
+  const userId = req.user.id;
+  sendSuccess(res, tradingStatisticsService.getStatistics(userId));
 }
 
 // Real Trading's balance previously only ever synced from the live exchange as a side effect of
@@ -90,4 +100,4 @@ async function syncRealBalance(req, res) {
   sendSuccess(res, snapshot, `Balance synced from ${credentials.name} (${quoteCurrency}).`);
 }
 
-module.exports = { getPortfolio, syncRealBalance, getTradeHistory };
+module.exports = { getPortfolio, syncRealBalance, getTradeHistory, getStatistics };

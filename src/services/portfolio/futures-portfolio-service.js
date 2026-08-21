@@ -110,8 +110,10 @@ function openPosition(mode, userId, { symbol, exchange, side, leverage, qty, ent
 }
 
 /** Closes this user's open position at exitPrice, realizing P&L (direction-aware: long profits on
- *  a rise, short profits on a fall) and crediting/debiting their futures cash (margin currency) balance. */
-function closePosition(mode, userId, positionId, exitPrice) {
+ *  a rise, short profits on a fall) and crediting/debiting their futures cash (margin currency)
+ *  balance. exitReason ('stop_loss' | 'take_profit' | 'signal' | 'manual') records why, for the
+ *  trade-history display — see positions-repository.js#closePosition. */
+function closePosition(mode, userId, positionId, exitPrice, exitReason = 'manual') {
   const position = futuresPositionsRepository.getPosition(mode, userId, positionId);
   if (!position || position.status !== 'open') {
     throw new Error(`No open futures position ${positionId} in mode "${mode}" for this user`);
@@ -121,7 +123,7 @@ function closePosition(mode, userId, positionId, exitPrice) {
   const portfolio = futuresPortfolioRepository.ensureInitialized(mode, userId, mode === 'demo' ? config.initialDemoBalance : 0);
   futuresPortfolioRepository.setBalance(mode, userId, portfolio.balance + realizedPnl);
 
-  return { ...futuresPositionsRepository.closePosition(mode, userId, positionId, { exitPrice, realizedPnl }), realizedPnl };
+  return { ...futuresPositionsRepository.closePosition(mode, userId, positionId, { exitPrice, realizedPnl, exitReason }), realizedPnl };
 }
 
 function getPnlSummary(mode, userId) {

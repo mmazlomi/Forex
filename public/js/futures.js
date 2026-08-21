@@ -311,6 +311,14 @@ const Futures = (() => {
   // Complete round-trip trade history — every CLOSED futures position, most recent first, with
   // which strategy/timeframe opened it and its realized profit/loss — private copy, mirroring
   // dashboard.js's identical helper plus a Leverage column futures positions have and spot doesn't.
+  // Mirrors dashboard.js's identical spot helper.
+  const EXIT_REASON_LABELS = { stop_loss: 'Stop-loss', take_profit: 'Take-profit', signal: 'Signal', manual: 'Manual' };
+  function exitReasonLabel(reason) {
+    return EXIT_REASON_LABELS[reason] || (reason || '-');
+  }
+
+  // Initial SL/TP are the risk levels the position was opened with; Trailed SL is stop_loss as it
+  // stood at close time — identical to Initial SL unless trailing ratcheted it.
   function renderTradeHistoryTable(body, emptyEl, trades) {
     clear(body);
     trades.forEach((t) => {
@@ -319,10 +327,13 @@ const Futures = (() => {
       if (t.realized_pnl > 0) pnlCell.className = 'text-positive';
       else if (t.realized_pnl < 0) pnlCell.className = 'text-negative';
       const strategyLabel = t.strategies && t.strategies.length > 0 ? t.strategies.map((s) => s.name).join(' + ') : '-';
+      const trailedStop = t.trailing_percent != null ? fmtPrice(t.stop_loss) : '-';
       row.append(
         el('td', {}, formatTimestamp(t.opened_at_utc)), el('td', {}, formatTimestamp(t.closed_at_utc)),
         el('td', {}, t.symbol), el('td', {}, t.side), el('td', {}, `${t.leverage}x`), el('td', {}, strategyLabel), el('td', {}, t.timeframe || '-'),
-        el('td', {}, fmt(t.qty, 6)), el('td', {}, fmtPrice(t.entry_price)), el('td', {}, fmtPrice(t.exit_price)), pnlCell
+        el('td', {}, fmt(t.qty, 6)), el('td', {}, fmtPrice(t.entry_price)),
+        el('td', {}, fmtPrice(t.initial_stop_loss)), el('td', {}, fmtPrice(t.take_profit)), el('td', {}, trailedStop),
+        el('td', {}, fmtPrice(t.exit_price)), el('td', {}, exitReasonLabel(t.exit_reason)), pnlCell
       );
       body.appendChild(row);
     });
@@ -570,22 +581,51 @@ const Futures = (() => {
 
         // Default trailing-stop distance for a position opened from this asset (manually via
         // "Trade from Signal", or by AI Auto-Trade) — blank/0 means off. Mirrors dashboard.js's
-        // identical spot cell.
+        // identical spot cell, including the "Auto" (ATR-based) toggle.
         const trailingInput = el('input', { type: 'number', step: 'any', min: '0', max: '100', placeholder: 'off' });
         if (asset.trailing_percent != null) trailingInput.value = String(asset.trailing_percent);
         trailingInput.title = 'Trailing-stop % this asset\'s positions use by default (manual "Trade from Signal" and AI Auto-Trade). Leave blank to trade with a fixed stop-loss instead.';
+        const trailingAutoCheckbox = el('input', { type: 'checkbox' });
+        trailingAutoCheckbox.checked = asset.trailing_mode === 'atr';
+        trailingInput.disabled = trailingAutoCheckbox.checked;
+        trailingAutoCheckbox.title = 'Auto: compute the trailing distance from live volatility (ATR) each time a position opens, instead of a fixed %.';
+
+        function revertTrailingUi() {
+          trailingAutoCheckbox.checked = asset.trailing_mode === 'atr';
+          trailingInput.disabled = trailingAutoCheckbox.checked;
+          trailingInput.value = asset.trailing_percent != null ? String(asset.trailing_percent) : '';
+        }
+
         trailingInput.addEventListener('change', async () => {
           const value = trailingInput.value ? Number(trailingInput.value) : null;
           try {
-            await Api.setFuturesTrailingPercent(mode, asset.symbol, asset.exchange, value);
+            await Api.setFuturesTrailingPercent(mode, asset.symbol, asset.exchange, value, 'fixed');
+            asset.trailing_percent = value;
+            asset.trailing_mode = 'fixed';
             toast(value ? `Trailing stop set to ${value}% for ${asset.symbol}.` : `Trailing stop disabled for ${asset.symbol}.`, 'success');
           } catch (err) {
-            trailingInput.value = asset.trailing_percent != null ? String(asset.trailing_percent) : '';
+            revertTrailingUi();
             toast(`Failed to update trailing stop: ${err.message}`, 'error');
           }
         });
-        const trailingCell = el('td');
+        trailingAutoCheckbox.addEventListener('change', async () => {
+          const useAuto = trailingAutoCheckbox.checked;
+          try {
+            await Api.setFuturesTrailingPercent(mode, asset.symbol, asset.exchange, useAuto ? null : (trailingInput.value ? Number(trailingInput.value) : null), useAuto ? 'atr' : 'fixed');
+            asset.trailing_mode = useAuto ? 'atr' : 'fixed';
+            if (useAuto) asset.trailing_percent = null;
+            trailingInput.disabled = useAuto;
+            if (useAuto) trailingInput.value = '';
+            toast(useAuto ? `Trailing stop set to auto (ATR-based) for ${asset.symbol}.` : `Trailing stop set to fixed for ${asset.symbol}.`, 'success');
+          } catch (err) {
+            revertTrailingUi();
+            toast(`Failed to update trailing stop: ${err.message}`, 'error');
+          }
+        });
+        const trailingCell = el('td', { class: 'trailing-cell' });
         trailingCell.appendChild(trailingInput);
+        trailingCell.appendChild(trailingAutoCheckbox);
+        trailingCell.appendChild(el('span', { class: 'trailing-auto-label' }, ' auto'));
         row.appendChild(trailingCell);
 
         const autoSelectCheckbox = el('input', { type: 'checkbox' });

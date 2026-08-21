@@ -24,6 +24,7 @@
 const assetsRepository = require('../../database/repositories/assets-repository');
 const positionsRepository = require('../../database/repositories/positions-repository');
 const liveEngine = require('../reversal-strategy/live-engine');
+const { resolveTrailingPercent } = require('../risk/atr-trailing');
 const { STRATEGY_ID: LSR_STRATEGY_ID } = require('../backtesting/reversal-backtest-engine');
 const { placeDemoOrder } = require('../orders/demo-orders');
 const { placeRealOrder } = require('../orders/real-orders');
@@ -87,7 +88,8 @@ async function processAsset(mode, asset, realCredCache) {
     // strategyId identifies this position as LSR-opened for the Open Positions "Strategy" column
     // even though there's no signals-table row to derive it from — see
     // futures-portfolio-service.js#openPosition's comment on this explicit-override param.
-    const orderArgs = { userId, symbol, exchange, side: 'buy', stopLoss: decision.stopLoss, takeProfit: decision.takeProfit, strategyId: LSR_STRATEGY_ID, timeframe: LSR_TIMEFRAME_LABEL, trailingPercent: asset.trailing_percent };
+    const trailingPercent = await resolveTrailingPercent(asset, { symbol, exchange, market: 'spot', timeframe: asset.default_timeframe });
+    const orderArgs = { userId, symbol, exchange, side: 'buy', stopLoss: decision.stopLoss, takeProfit: decision.takeProfit, strategyId: LSR_STRATEGY_ID, timeframe: LSR_TIMEFRAME_LABEL, trailingPercent };
     if (mode === 'real') orderArgs.unlockConfirmed = true; // no human present per-trade — gated by realSpotAutoTradeGloballyAllowed() + the asset's own real_auto_trade_enabled + per-user credentials instead
 
     const order = await placeOrder(orderArgs);

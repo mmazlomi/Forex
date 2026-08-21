@@ -21,10 +21,13 @@ function listAllOpenPositions(mode) {
 function insertPosition(mode, userId, position) {
   const db = getDb();
   const table = positionsTable(mode);
+  // initial_stop_loss snapshots stop_loss as opened — never touched again, unlike stop_loss itself
+  // (which position-risk-watcher.js's trailing ratchet overwrites in place) — so trade history can
+  // show both the as-opened stop and, separately, wherever trailing eventually moved it to.
   const result = db
     .prepare(
-      `INSERT INTO ${table} (user_id, symbol, exchange, side, qty, entry_price, stop_loss, take_profit, opened_at_utc, status, signal_id, strategy_id, combined_strategy_ids_json, combined_votes_json, source, timeframe, trailing_percent, trailing_high_water_mark)
-       VALUES (@userId, @symbol, @exchange, @side, @qty, @entryPrice, @stopLoss, @takeProfit, @openedAtUtc, 'open', @signalId, @strategyId, @combinedStrategyIdsJson, @combinedVotesJson, @source, @timeframe, @trailingPercent, @trailingHighWaterMark)`
+      `INSERT INTO ${table} (user_id, symbol, exchange, side, qty, entry_price, stop_loss, take_profit, opened_at_utc, status, signal_id, strategy_id, combined_strategy_ids_json, combined_votes_json, source, timeframe, trailing_percent, trailing_high_water_mark, initial_stop_loss)
+       VALUES (@userId, @symbol, @exchange, @side, @qty, @entryPrice, @stopLoss, @takeProfit, @openedAtUtc, 'open', @signalId, @strategyId, @combinedStrategyIdsJson, @combinedVotesJson, @source, @timeframe, @trailingPercent, @trailingHighWaterMark, @stopLoss)`
     )
     .run({
       exchange: null,
@@ -49,12 +52,12 @@ function findOpenPositionBySymbol(mode, userId, symbol) {
   return db.prepare(`SELECT * FROM ${table} WHERE user_id = ? AND symbol = ? AND status = 'open' LIMIT 1`).get(userId, symbol);
 }
 
-function closePosition(mode, userId, id, { exitPrice, realizedPnl }) {
+function closePosition(mode, userId, id, { exitPrice, realizedPnl, exitReason = null }) {
   const db = getDb();
   const table = positionsTable(mode);
   db.prepare(
-    `UPDATE ${table} SET status = 'closed', exit_price = ?, realized_pnl = ?, closed_at_utc = ? WHERE id = ? AND user_id = ?`
-  ).run(exitPrice, realizedPnl, new Date().toISOString(), id, userId);
+    `UPDATE ${table} SET status = 'closed', exit_price = ?, realized_pnl = ?, closed_at_utc = ?, exit_reason = ? WHERE id = ? AND user_id = ?`
+  ).run(exitPrice, realizedPnl, new Date().toISOString(), exitReason, id, userId);
   return getPosition(mode, userId, id);
 }
 
@@ -90,6 +93,15 @@ function listClosedPositions(mode, userId, { limit = 50 } = {}) {
   return db.prepare(`SELECT * FROM ${table} WHERE user_id = ? AND status = 'closed' ORDER BY closed_at_utc DESC LIMIT ?`).all(userId, limit);
 }
 
+// Unlike listClosedPositions (capped, most-recent-first, for the Trade History display), this
+// returns every closed position with no cap — used by trading-statistics-service.js, where a
+// win-rate/PnL rollup that silently only covered the most recent 50 trades would be misleading.
+function listAllClosedPositions(mode, userId) {
+  const db = getDb();
+  const table = positionsTable(mode);
+  return db.prepare(`SELECT * FROM ${table} WHERE user_id = ? AND status = 'closed'`).all(userId);
+}
+
 /** Ratchets a trailing-stop position's stop_loss/high-water-mark — called every position-risk-
  *  watcher.js cycle for positions with trailing_percent set. Ownership-scoped like getPosition;
  *  updates nothing if the id/userId pair doesn't match an existing row. */
@@ -110,6 +122,7 @@ module.exports = {
   sumRealizedPnlSince,
   sumAllRealizedPnl,
   countClosedByOutcome,
+  listAllClosedPositions,
   listClosedPositions,
   updateTrailingStop,
 };

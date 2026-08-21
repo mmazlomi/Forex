@@ -98,8 +98,10 @@ function openPosition(mode, userId, { symbol, exchange, side, qty, entryPrice, s
   });
 }
 
-/** Closes this user's open position at exitPrice, realizing P&L and crediting/debiting their cash balance. */
-function closePosition(mode, userId, positionId, exitPrice) {
+/** Closes this user's open position at exitPrice, realizing P&L and crediting/debiting their cash
+ *  balance. exitReason ('stop_loss' | 'take_profit' | 'signal' | 'manual') records why, for the
+ *  trade-history display — see positions-repository.js#closePosition. */
+function closePosition(mode, userId, positionId, exitPrice, exitReason = 'manual') {
   const position = positionsRepository.getPosition(mode, userId, positionId);
   if (!position || position.status !== 'open') {
     throw new Error(`No open position ${positionId} in mode "${mode}" for this user`);
@@ -113,7 +115,7 @@ function closePosition(mode, userId, positionId, exitPrice) {
   const portfolio = portfolioRepository.ensureInitialized(mode, userId, mode === 'demo' ? config.initialDemoBalance : 0);
   portfolioRepository.setBalance(mode, userId, portfolio.balance + realizedPnl);
 
-  return { ...positionsRepository.closePosition(mode, userId, positionId, { exitPrice, realizedPnl }), realizedPnl };
+  return { ...positionsRepository.closePosition(mode, userId, positionId, { exitPrice, realizedPnl, exitReason }), realizedPnl };
 }
 
 /**

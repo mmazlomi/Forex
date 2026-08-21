@@ -140,21 +140,34 @@ async function setTimeframe(req, res) {
 // asset — manually via "Trade from Signal", or by AI Auto-Trade — unless the order itself
 // overrides it. null clears it (trailing off). Positions already open are never retroactively
 // changed by this — it only affects positions opened after the setting is saved.
+// trailingMode 'atr' opts into an auto-computed distance (ATR(14) x 2 as a percent of price,
+// recalculated fresh each time a position opens — see risk/atr-trailing.js) instead of the flat
+// trailingPercent number; trailingPercent must be null when trailingMode is 'atr'.
 async function setTrailingPercent(req, res) {
   const { symbol } = req.params;
   const { exchange } = req.query;
-  const { trailingPercent } = req.body || {};
+  const { trailingPercent, trailingMode = 'fixed' } = req.body || {};
   if (!exchange) {
     return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
   }
-  if (trailingPercent !== null && !(typeof trailingPercent === 'number' && trailingPercent > 0 && trailingPercent < 100)) {
+  if (!['fixed', 'atr'].includes(trailingMode)) {
+    return sendError(res, 'VALIDATION_ERROR', 'trailingMode must be "fixed" or "atr".');
+  }
+  if (trailingMode === 'atr') {
+    if (trailingPercent !== null && trailingPercent !== undefined) {
+      return sendError(res, 'VALIDATION_ERROR', 'trailingPercent must be null when trailingMode is "atr" — the distance is computed automatically.');
+    }
+  } else if (trailingPercent !== null && !(typeof trailingPercent === 'number' && trailingPercent > 0 && trailingPercent < 100)) {
     return sendError(res, 'VALIDATION_ERROR', 'trailingPercent must be a number between 0 and 100 (exclusive), or null to disable.');
   }
-  const asset = assetsRepository.setTrailingPercent(req.user.id, symbol, exchange, trailingPercent);
+  const asset = assetsRepository.setTrailingPercent(req.user.id, symbol, exchange, trailingMode === 'atr' ? null : trailingPercent, trailingMode);
   if (!asset) {
     return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
   }
-  sendSuccess(res, asset, trailingPercent ? `Trailing stop set to ${trailingPercent}% for ${symbol}.` : `Trailing stop disabled for ${symbol}.`);
+  const message = trailingMode === 'atr'
+    ? `Trailing stop set to auto (ATR-based) for ${symbol}.`
+    : (trailingPercent ? `Trailing stop set to ${trailingPercent}% for ${symbol}.` : `Trailing stop disabled for ${symbol}.`);
+  sendSuccess(res, asset, message);
 }
 
 // Moves a watchlist entry to a different exchange without removing/re-adding it — same crypto

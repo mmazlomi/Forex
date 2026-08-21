@@ -17,6 +17,7 @@
 const futuresAssetsRepository = require('../../database/repositories/futures-assets-repository');
 const futuresPositionsRepository = require('../../database/repositories/futures-positions-repository');
 const liveEngine = require('../reversal-strategy/live-engine');
+const { resolveTrailingPercent } = require('../risk/atr-trailing');
 const { STRATEGY_ID: LSR_STRATEGY_ID } = require('../backtesting/reversal-backtest-engine');
 const { placeDemoFuturesOrder } = require('../orders/futures-demo-orders');
 const { placeRealFuturesOrder } = require('../orders/futures-real-orders');
@@ -75,7 +76,8 @@ async function processAsset(mode, asset, source, realCredCache) {
     // strategyId identifies this position as LSR-opened for the Open Positions "Strategy" column
     // even though there's no signals-table row to derive it from (LSR never writes one — see
     // futures-portfolio-service.js#openPosition's comment on this explicit-override param).
-    const orderArgs = { userId, symbol, exchange, action, leverage, stopLoss: decision.stopLoss, takeProfit: decision.takeProfit, source, strategyId: LSR_STRATEGY_ID, timeframe: LSR_TIMEFRAME_LABEL, trailingPercent: asset.trailing_percent };
+    const trailingPercent = await resolveTrailingPercent(asset, { symbol, exchange, market: 'futures', timeframe: asset.default_timeframe });
+    const orderArgs = { userId, symbol, exchange, action, leverage, stopLoss: decision.stopLoss, takeProfit: decision.takeProfit, source, strategyId: LSR_STRATEGY_ID, timeframe: LSR_TIMEFRAME_LABEL, trailingPercent };
     if (mode === 'real') orderArgs.unlockConfirmed = true; // no human present per-trade — gated by realAutoTradeGloballyAllowed() + list membership + per-user credentials instead
 
     const order = await placeOrder(orderArgs);

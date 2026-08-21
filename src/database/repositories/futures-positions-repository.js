@@ -19,13 +19,16 @@ function listAllOpenPositions(mode) {
   return db.prepare(`SELECT * FROM ${table} WHERE status = 'open' ORDER BY opened_at_utc`).all();
 }
 
+// initial_stop_loss snapshots stop_loss as opened — never touched again, unlike stop_loss itself
+// (which position-risk-watcher.js's trailing ratchet overwrites in place) — see
+// positions-repository.js's identical spot-side comment.
 function insertPosition(mode, userId, position) {
   const db = getDb();
   const table = futuresPositionsTable(mode);
   const result = db
     .prepare(
-      `INSERT INTO ${table} (user_id, symbol, exchange, side, leverage, margin_mode, qty, entry_price, liquidation_price, stop_loss, take_profit, opened_at_utc, status, signal_id, strategy_id, combined_strategy_ids_json, combined_votes_json, source, timeframe, trailing_percent, trailing_high_water_mark)
-       VALUES (@userId, @symbol, @exchange, @side, @leverage, @marginMode, @qty, @entryPrice, @liquidationPrice, @stopLoss, @takeProfit, @openedAtUtc, 'open', @signalId, @strategyId, @combinedStrategyIdsJson, @combinedVotesJson, @source, @timeframe, @trailingPercent, @trailingHighWaterMark)`
+      `INSERT INTO ${table} (user_id, symbol, exchange, side, leverage, margin_mode, qty, entry_price, liquidation_price, stop_loss, take_profit, opened_at_utc, status, signal_id, strategy_id, combined_strategy_ids_json, combined_votes_json, source, timeframe, trailing_percent, trailing_high_water_mark, initial_stop_loss)
+       VALUES (@userId, @symbol, @exchange, @side, @leverage, @marginMode, @qty, @entryPrice, @liquidationPrice, @stopLoss, @takeProfit, @openedAtUtc, 'open', @signalId, @strategyId, @combinedStrategyIdsJson, @combinedVotesJson, @source, @timeframe, @trailingPercent, @trailingHighWaterMark, @stopLoss)`
     )
     .run({
       marginMode: 'isolated', liquidationPrice: null,
@@ -50,12 +53,12 @@ function findOpenPositionBySymbol(mode, userId, symbol) {
   return db.prepare(`SELECT * FROM ${table} WHERE user_id = ? AND symbol = ? AND status = 'open' LIMIT 1`).get(userId, symbol);
 }
 
-function closePosition(mode, userId, id, { exitPrice, realizedPnl }) {
+function closePosition(mode, userId, id, { exitPrice, realizedPnl, exitReason = null }) {
   const db = getDb();
   const table = futuresPositionsTable(mode);
   db.prepare(
-    `UPDATE ${table} SET status = 'closed', exit_price = ?, realized_pnl = ?, closed_at_utc = ? WHERE id = ? AND user_id = ?`
-  ).run(exitPrice, realizedPnl, new Date().toISOString(), id, userId);
+    `UPDATE ${table} SET status = 'closed', exit_price = ?, realized_pnl = ?, closed_at_utc = ?, exit_reason = ? WHERE id = ? AND user_id = ?`
+  ).run(exitPrice, realizedPnl, new Date().toISOString(), exitReason, id, userId);
   return getPosition(mode, userId, id);
 }
 
@@ -89,6 +92,13 @@ function listClosedPositions(mode, userId, { limit = 50 } = {}) {
   return db.prepare(`SELECT * FROM ${table} WHERE user_id = ? AND status = 'closed' ORDER BY closed_at_utc DESC LIMIT ?`).all(userId, limit);
 }
 
+// See positions-repository.js's identical spot-side comment — uncapped, for statistics rollups.
+function listAllClosedPositions(mode, userId) {
+  const db = getDb();
+  const table = futuresPositionsTable(mode);
+  return db.prepare(`SELECT * FROM ${table} WHERE user_id = ? AND status = 'closed'`).all(userId);
+}
+
 /** Used by the auto-trader's per-cycle liquidation-distance check to re-evaluate every open,
  *  auto-opened position without listing every column consumer needs separately. Ownership-scoped
  *  like getPosition — updates nothing if the id/userId pair doesn't match an existing row. */
@@ -120,6 +130,7 @@ module.exports = {
   sumAllRealizedPnl,
   countClosedByOutcome,
   listClosedPositions,
+  listAllClosedPositions,
   updateLiquidationPrice,
   updateTrailingStop,
 };

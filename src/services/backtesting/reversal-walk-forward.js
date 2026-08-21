@@ -50,6 +50,7 @@ async function runReversalWalkForward({
   feePercent = 0.1,
   slippagePercent = 0.05,
   configOverrides = {},
+  adaptiveTpConfig,
 }) {
   const config = mergeConfig(configOverrides);
   const configErrors = validateConfig(config);
@@ -67,7 +68,7 @@ async function runReversalWalkForward({
 
   for (const window of windows) {
     const fetched = await fetchReversalCandles({ symbol, exchange, startMs: window.startMs, endMs: window.endMs, market, config });
-    const { trades, equityCurve, warnings } = simulateReversalStrategy({ ...fetched, symbol, initialCapital, feePercent, slippagePercent, config });
+    const { trades, equityCurve, warnings } = simulateReversalStrategy({ ...fetched, symbol, initialCapital, feePercent, slippagePercent, config, adaptiveTpConfig });
     const periodsPerYear = MS_PER_YEAR / fetched.entryStepMs;
     const metrics = computeExtendedMetrics({ trades, equityCurve, initialCapital, periodsPerYear });
     windowResults.push({

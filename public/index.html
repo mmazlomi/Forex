@@ -65,6 +65,7 @@
     <button class="tab-btn" data-tab="real" type="button">Real Trading</button>
     <button class="tab-btn" data-tab="watchlist" type="button">Signals Setting</button>
     <button class="tab-btn" data-tab="backtest" type="button">Backtest</button>
+    <button class="tab-btn" data-tab="statistics" type="button">Statistics</button>
     <button class="tab-btn" data-tab="risk" type="button">Risk Settings</button>
     <button class="tab-btn" data-tab="system" type="button">System &amp; Logs</button>
   </nav>
@@ -244,7 +245,7 @@
         <h2>Demo Trade History <span class="mode-badge mode-badge--demo">DEMO</span></h2>
         <p class="hint">Every CLOSED (round-trip) position — which strategy/timeframe opened it, entry vs. exit, and realized profit/loss.</p>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Realized P&amp;L</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Take Profit</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
             <tbody id="demo-trade-history-body"></tbody></table>
         </div>
         <div id="demo-trade-history-empty" class="empty-state" hidden>No closed trades yet.</div>
@@ -297,7 +298,7 @@
         <h2>Demo Futures Trade History <span class="mode-badge mode-badge--demo">DEMO</span></h2>
         <p class="hint">Every CLOSED (round-trip) position — which strategy/timeframe opened it, entry vs. exit, and realized profit/loss.</p>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Leverage</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Realized P&amp;L</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Leverage</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Take Profit</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
             <tbody id="futures-demo-trade-history-body"></tbody></table>
         </div>
         <div id="futures-demo-trade-history-empty" class="empty-state" hidden>No closed trades yet.</div>
@@ -407,7 +408,7 @@
         <h2>Real Trade History <span class="mode-badge mode-badge--real">REAL</span></h2>
         <p class="hint">Every CLOSED (round-trip) position — which strategy/timeframe opened it, entry vs. exit, and realized profit/loss.</p>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Realized P&amp;L</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Take Profit</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
             <tbody id="real-trade-history-body"></tbody></table>
         </div>
         <div id="real-trade-history-empty" class="empty-state" hidden>No closed trades yet.</div>
@@ -462,7 +463,7 @@
         <h2>Real Futures Trade History <span class="mode-badge mode-badge--real">REAL</span></h2>
         <p class="hint">Every CLOSED (round-trip) position — which strategy/timeframe opened it, entry vs. exit, and realized profit/loss.</p>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Leverage</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Realized P&amp;L</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Leverage</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Take Profit</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
             <tbody id="futures-real-trade-history-body"></tbody></table>
         </div>
         <div id="futures-real-trade-history-empty" class="empty-state" hidden>No closed trades yet.</div>
@@ -596,6 +597,60 @@
       </div>
     </section>
 
+    <!-- Statistics tab -->
+    <section class="tab-panel" id="tab-statistics">
+      <div class="card">
+        <h2>Overview</h2>
+        <p class="hint">Every CLOSED (round-trip) position across your account — Demo and Real, Spot and Futures. "Overall" combines Demo and Real trade counts/win rate for a quick skill signal; treat its Realized P&amp;L as informational only since Demo and Real balances aren't the same money.</p>
+        <div class="grid grid--3col">
+          <div>
+            <h3>Demo <span class="mode-badge mode-badge--demo">DEMO</span></h3>
+            <dl class="stat-list" id="stats-demo-total"></dl>
+          </div>
+          <div>
+            <h3>Real <span class="mode-badge mode-badge--real">REAL</span></h3>
+            <dl class="stat-list" id="stats-real-total"></dl>
+          </div>
+          <div>
+            <h3>Overall</h3>
+            <dl class="stat-list" id="stats-overall"></dl>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>By Market <span class="mode-badge mode-badge--demo">DEMO</span></h2>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Market</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Realized P&amp;L</th><th>Avg Win</th><th>Avg Loss</th><th>Profit Factor</th></tr></thead>
+            <tbody id="stats-demo-market-body"></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>By Strategy <span class="mode-badge mode-badge--demo">DEMO</span></h2>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Realized P&amp;L</th></tr></thead>
+            <tbody id="stats-demo-strategy-body"></tbody></table>
+        </div>
+        <div id="stats-demo-strategy-empty" class="empty-state" hidden>No closed trades yet.</div>
+      </div>
+
+      <div class="card">
+        <h2>By Market <span class="mode-badge mode-badge--real">REAL</span></h2>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Market</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Realized P&amp;L</th><th>Avg Win</th><th>Avg Loss</th><th>Profit Factor</th></tr></thead>
+            <tbody id="stats-real-market-body"></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>By Strategy <span class="mode-badge mode-badge--real">REAL</span></h2>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Realized P&amp;L</th></tr></thead>
+            <tbody id="stats-real-strategy-body"></tbody></table>
+        </div>
+        <div id="stats-real-strategy-empty" class="empty-state" hidden>No closed trades yet.</div>
+      </div>
+    </section>
+
     <!-- Risk Settings tab -->
     <section class="tab-panel" id="tab-risk">
       <div class="card">
@@ -608,6 +663,20 @@
           <label>Min risk/reward ratio <input name="minRiskRewardRatio" type="number" step="any" /></label>
           <label>Max portfolio exposure (%) <input name="maxPortfolioExposurePercent" type="number" step="any" /></label>
           <button type="submit">Save Settings</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Futures Risk Settings <span id="futures-risk-mode-badge" class="mode-badge mode-badge--demo">DEMO</span></h2>
+        <p class="hint">Separate from Risk Settings above — futures positions (open_long/open_short) are checked against these limits, not the spot ones.</p>
+        <form id="futures-risk-settings-form" class="order-form">
+          <label>Max risk per trade (%) <input name="maxRiskPerTradePercent" type="number" step="any" /></label>
+          <label>Max daily loss (%) <input name="maxDailyLossPercent" type="number" step="any" /></label>
+          <label>Max open positions <input name="maxOpenPositions" type="number" /></label>
+          <label>Max order value <input name="maxOrderValue" type="number" step="any" /></label>
+          <label>Min risk/reward ratio <input name="minRiskRewardRatio" type="number" step="any" /></label>
+          <label>Max portfolio exposure (%) <input name="maxPortfolioExposurePercent" type="number" step="any" /></label>
+          <label>Max leverage <input name="maxLeverage" type="number" step="any" /></label>
+          <button type="submit">Save Futures Settings</button>
         </form>
       </div>
       <div class="card">

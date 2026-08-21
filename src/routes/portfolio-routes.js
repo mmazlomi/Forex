@@ -9,6 +9,7 @@ const router = express.Router();
 
 router.get('/', requireValidMode, asyncHandler(controller.getPortfolio));
 router.get('/history', requireValidMode, asyncHandler(controller.getTradeHistory));
+router.get('/statistics', asyncHandler(controller.getStatistics));
 router.post('/real/sync-balance', asyncHandler(controller.syncRealBalance));
 
 module.exports = router;

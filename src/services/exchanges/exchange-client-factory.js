@@ -168,7 +168,11 @@ function instantiateFuturesExchange(exchangeName, credentialOptions = {}) {
   const id = assertFuturesExchangeSupported(exchangeName);
   const ExchangeClass = resolveFuturesExchangeClass(id);
   const { instantiateOptions } = FUTURES_EXCHANGES[id];
-  return new ExchangeClass({ enableRateLimit: true, timeout: config.requestTimeoutMs, ...credentialOptions, ...instantiateOptions });
+  // Same fix as skipUnusedCurrencyFetch's spot-side callers above (see its comment) — CoinEx's
+  // unified class hits the same unrelated "assets/all-deposit-withdraw-config" prerequisite during
+  // loadMarkets() on its futures/swap path too, so without this every futures snapshot/candle call
+  // fails the moment that one unused sub-call does, even though tickers/positions are healthy.
+  return skipUnusedCurrencyFetch(new ExchangeClass({ enableRateLimit: true, timeout: config.requestTimeoutMs, ...credentialOptions, ...instantiateOptions }));
 }
 
 /** Market-data / read-only futures client. No credentials. */

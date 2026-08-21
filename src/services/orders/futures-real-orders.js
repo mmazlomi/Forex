@@ -90,7 +90,7 @@ function persistRejected({ id, userId, symbol, exchange, action, leverage, stopL
  * own credential check is the final, defense-in-depth gate for this specific real-money call,
  * regardless of what the auto-trader's cycle-level cache already decided.
  */
-async function placeRealFuturesOrder({ userId, symbol, exchange = 'kucoin', action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, source = 'manual', strategyId, timeframe, trailingPercent }) {
+async function placeRealFuturesOrder({ userId, symbol, exchange = 'kucoin', action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, source = 'manual', strategyId, timeframe, trailingPercent, reason }) {
   const id = uuidv4();
   action = String(action || '').toLowerCase();
 
@@ -134,7 +134,7 @@ async function placeRealFuturesOrder({ userId, symbol, exchange = 'kucoin', acti
   }
 
   if (action === 'close') {
-    return closeRealFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source });
+    return closeRealFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source, reason });
   }
 
   // open_long / open_short
@@ -267,7 +267,7 @@ async function placeRealFuturesOrder({ userId, symbol, exchange = 'kucoin', acti
   return order;
 }
 
-async function closeRealFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source }) {
+async function closeRealFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source, reason }) {
   const openPosition = futuresPositionsRepository.findOpenPositionBySymbol(MODE, userId, symbol);
   if (!openPosition) {
     return persistRejected({ id, userId, symbol, exchange, action: 'close', price, reasonCode: 'NO_OPEN_POSITION_TO_CLOSE', message: `No open Real futures position for ${symbol}.`, idempotencyKey, signalId, source });
@@ -291,7 +291,7 @@ async function closeRealFuturesPosition({ id, userId, symbol, exchange, price, i
     responseJson: JSON.stringify(exchangeResponse),
   });
 
-  const { realizedPnl } = futuresPortfolioService.closePosition(MODE, userId, openPosition.id, price);
+  const { realizedPnl } = futuresPortfolioService.closePosition(MODE, userId, openPosition.id, price, reason ?? 'manual');
 
   const order = futuresOrdersRepository.insertOrder(MODE, userId, {
     id, symbol, exchange, action: 'close', leverage: openPosition.leverage, qty: openPosition.qty, price,

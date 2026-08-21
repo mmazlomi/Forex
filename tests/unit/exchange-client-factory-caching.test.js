@@ -40,3 +40,16 @@ test('getPublicExchange and getPublicFuturesExchange caches are independent (spo
   const futures = exchangeClientFactory.getPublicFuturesExchange('kucoin');
   assert.notEqual(spot, futures);
 });
+
+// Regression test for a real outage: CoinEx's unified ccxt class fetches unrelated currency
+// deposit/withdraw config as a loadMarkets() prerequisite (see skipUnusedCurrencyFetch's comment
+// in exchange-client-factory.js) — when that one unused sub-call failed, it took down futures
+// market data/candles/signals for the whole exchange even though tickers/positions were healthy.
+// The spot client already disabled this; the futures client didn't, so every CoinEx futures
+// position's "Current" price silently showed nothing until this was fixed.
+test('getPublicFuturesExchange disables fetchCurrencies, same as the spot client, so loadMarkets() never depends on the unrelated currency endpoint', () => {
+  const spot = exchangeClientFactory.getPublicExchange('coinex');
+  const futures = exchangeClientFactory.getPublicFuturesExchange('coinex');
+  assert.equal(spot.has.fetchCurrencies, false);
+  assert.equal(futures.has.fetchCurrencies, false);
+});

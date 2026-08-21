@@ -144,7 +144,8 @@
       if (ModeSwitcher.isRealUnlocked()) Futures.refreshPortfolio('real');
     }
     if (tabName === 'watchlist') { refreshSpotWatchlist(); Futures.refreshBothWatchlists(); }
-    if (tabName === 'risk') loadRiskSettings(ModeSwitcher.getMode());
+    if (tabName === 'statistics') refreshStatistics();
+    if (tabName === 'risk') { loadRiskSettings(ModeSwitcher.getMode()); loadFuturesRiskSettings(ModeSwitcher.getMode()); }
     if (tabName === 'system') { refreshSystemStatus(); refreshLogs(); }
   }
 
@@ -484,21 +485,52 @@
         // Default trailing-stop distance for a position opened from this asset (manually via
         // "Trade from Signal", or by AI Auto-Trade) — blank/0 means off. Saved on blur, not on
         // every keystroke, matching a plain number input's natural change-commit point.
+        // "Auto" opts into an ATR-based distance recomputed fresh each time a position opens
+        // (see risk/atr-trailing.js) instead of this fixed number.
         const trailingInput = el('input', { type: 'number', step: 'any', min: '0', max: '100', placeholder: 'off' });
         if (asset.trailing_percent != null) trailingInput.value = String(asset.trailing_percent);
         trailingInput.title = 'Trailing-stop % this asset\'s positions use by default (manual "Trade from Signal" and AI Auto-Trade). Leave blank to trade with a fixed stop-loss instead.';
+        const trailingAutoCheckbox = el('input', { type: 'checkbox' });
+        trailingAutoCheckbox.checked = asset.trailing_mode === 'atr';
+        trailingInput.disabled = trailingAutoCheckbox.checked;
+        trailingAutoCheckbox.title = 'Auto: compute the trailing distance from live volatility (ATR) each time a position opens, instead of a fixed %.';
+
+        function revertTrailingUi() {
+          trailingAutoCheckbox.checked = asset.trailing_mode === 'atr';
+          trailingInput.disabled = trailingAutoCheckbox.checked;
+          trailingInput.value = asset.trailing_percent != null ? String(asset.trailing_percent) : '';
+        }
+
         trailingInput.addEventListener('change', async () => {
           const value = trailingInput.value ? Number(trailingInput.value) : null;
           try {
-            await Api.setAssetTrailingPercent(asset.symbol, asset.exchange, value);
+            await Api.setAssetTrailingPercent(asset.symbol, asset.exchange, value, 'fixed');
+            asset.trailing_percent = value;
+            asset.trailing_mode = 'fixed';
             toast(value ? `Trailing stop set to ${value}% for ${asset.symbol}.` : `Trailing stop disabled for ${asset.symbol}.`, 'success');
           } catch (err) {
-            trailingInput.value = asset.trailing_percent != null ? String(asset.trailing_percent) : '';
+            revertTrailingUi();
             toast(`Failed to update trailing stop: ${err.message}`, 'error');
           }
         });
-        const trailingCell = el('td');
+        trailingAutoCheckbox.addEventListener('change', async () => {
+          const useAuto = trailingAutoCheckbox.checked;
+          try {
+            await Api.setAssetTrailingPercent(asset.symbol, asset.exchange, useAuto ? null : (trailingInput.value ? Number(trailingInput.value) : null), useAuto ? 'atr' : 'fixed');
+            asset.trailing_mode = useAuto ? 'atr' : 'fixed';
+            if (useAuto) asset.trailing_percent = null;
+            trailingInput.disabled = useAuto;
+            if (useAuto) trailingInput.value = '';
+            toast(useAuto ? `Trailing stop set to auto (ATR-based) for ${asset.symbol}.` : `Trailing stop set to fixed for ${asset.symbol}.`, 'success');
+          } catch (err) {
+            revertTrailingUi();
+            toast(`Failed to update trailing stop: ${err.message}`, 'error');
+          }
+        });
+        const trailingCell = el('td', { class: 'trailing-cell' });
         trailingCell.appendChild(trailingInput);
+        trailingCell.appendChild(trailingAutoCheckbox);
+        trailingCell.appendChild(el('span', { class: 'trailing-auto-label' }, ' auto'));
         row.appendChild(trailingCell);
 
         const autoSelectCheckbox = el('input', { type: 'checkbox' });
@@ -1224,8 +1256,18 @@
     });
   }
 
+  // Human label for a closed position's exit_reason — see position-risk-watcher.js /
+  // orders.js's `reason` convention this was written into the trades table with.
+  const EXIT_REASON_LABELS = { stop_loss: 'Stop-loss', take_profit: 'Take-profit', signal: 'Signal', manual: 'Manual' };
+  function exitReasonLabel(reason) {
+    return EXIT_REASON_LABELS[reason] || (reason || '-');
+  }
+
   // Complete round-trip trade history — every CLOSED position, most recent first, with which
   // strategy/timeframe opened it and its realized profit/loss (see portfolio-controller.js#getTradeHistory).
+  // Initial SL/TP are the risk levels the position was opened with; Trailed SL is stop_loss as it
+  // stood at close time — identical to Initial SL unless trailing ratcheted it — see
+  // positions-repository.js's initial_stop_loss comment for why the two are stored separately.
   function renderTradeHistoryTable(body, emptyEl, trades) {
     clear(body);
     trades.forEach((t) => {
@@ -1234,14 +1276,105 @@
       if (t.realized_pnl > 0) pnlCell.className = 'text-positive';
       else if (t.realized_pnl < 0) pnlCell.className = 'text-negative';
       const strategyLabel = t.strategies && t.strategies.length > 0 ? t.strategies.map((s) => s.name).join(' + ') : '-';
+      const trailedStop = t.trailing_percent != null ? fmtPrice(t.stop_loss) : '-';
       row.append(
         el('td', {}, formatTimestamp(t.opened_at_utc)), el('td', {}, formatTimestamp(t.closed_at_utc)),
         el('td', {}, t.symbol), el('td', {}, t.side), el('td', {}, strategyLabel), el('td', {}, t.timeframe || '-'),
-        el('td', {}, fmt(t.qty, 6)), el('td', {}, fmtPrice(t.entry_price)), el('td', {}, fmtPrice(t.exit_price)), pnlCell
+        el('td', {}, fmt(t.qty, 6)), el('td', {}, fmtPrice(t.entry_price)),
+        el('td', {}, fmtPrice(t.initial_stop_loss)), el('td', {}, fmtPrice(t.take_profit)), el('td', {}, trailedStop),
+        el('td', {}, fmtPrice(t.exit_price)), el('td', {}, exitReasonLabel(t.exit_reason)), pnlCell
       );
       body.appendChild(row);
     });
     if (emptyEl) emptyEl.hidden = trades.length > 0;
+  }
+
+  // ---------- statistics ----------
+
+  function fmtWinRate(s) {
+    return s.winRatePercent == null ? '-' : `${fmt(s.winRatePercent, 1)}% (${s.wins}W/${s.losses}L)`;
+  }
+
+  function fmtProfitFactor(pf) {
+    if (pf === null || pf === undefined) return '-';
+    if (typeof pf === 'string') return pf; // '∞' — server sends this instead of the number
+    // Infinity, since JSON can't represent Infinity (it would silently become null).
+    return fmt(pf, 2);
+  }
+
+  function pnlClassName(value) {
+    return value > 0 ? 'text-positive' : value < 0 ? 'text-negative' : '';
+  }
+
+  // One of the three top-of-tab summary dls (Demo total / Real total / Overall) — see
+  // trading-statistics-service.js#summarize for the shape of `s`.
+  function renderStatsSummary(container, s) {
+    renderStatList(container, [
+      ['Trades', String(s.count)],
+      ['Win rate', fmtWinRate(s)],
+      ['Realized P&L', fmt(s.totalRealizedPnl)],
+      ['Profit factor', fmtProfitFactor(s.profitFactor)],
+    ]);
+    container.children[2].querySelector('dd').className = pnlClassName(s.totalRealizedPnl);
+  }
+
+  // Spot vs Futures rows for one mode (Demo or Real).
+  function renderStatsMarketTable(body, rows) {
+    clear(body);
+    rows.forEach(({ label, ...s }) => {
+      const row = el('tr');
+      const pnlCell = el('td', {}, fmt(s.totalRealizedPnl));
+      pnlCell.className = pnlClassName(s.totalRealizedPnl);
+      row.append(
+        el('td', {}, label), el('td', {}, String(s.count)), el('td', {}, String(s.wins)), el('td', {}, String(s.losses)),
+        el('td', {}, s.winRatePercent == null ? '-' : `${fmt(s.winRatePercent, 1)}%`),
+        pnlCell,
+        el('td', {}, s.avgWin == null ? '-' : fmt(s.avgWin)),
+        el('td', {}, s.avgLoss == null ? '-' : fmt(s.avgLoss)),
+        el('td', {}, fmtProfitFactor(s.profitFactor))
+      );
+      body.appendChild(row);
+    });
+  }
+
+  // Per-strategy rows for one mode — a combined-vote trade is one row (its joined strategy names),
+  // not split across component strategies (see trading-statistics-service.js#strategyGroupKey).
+  function renderStatsStrategyTable(body, emptyEl, byStrategy) {
+    clear(body);
+    byStrategy.forEach((s) => {
+      const row = el('tr');
+      const pnlCell = el('td', {}, fmt(s.totalRealizedPnl));
+      pnlCell.className = pnlClassName(s.totalRealizedPnl);
+      row.append(
+        el('td', {}, s.strategyName), el('td', {}, String(s.count)), el('td', {}, String(s.wins)), el('td', {}, String(s.losses)),
+        el('td', {}, s.winRatePercent == null ? '-' : `${fmt(s.winRatePercent, 1)}%`),
+        pnlCell
+      );
+      body.appendChild(row);
+    });
+    if (emptyEl) emptyEl.hidden = byStrategy.length > 0;
+  }
+
+  async function refreshStatistics() {
+    try {
+      const stats = await Api.getTradingStatistics();
+
+      renderStatsSummary(document.getElementById('stats-demo-total'), stats.demo.total);
+      renderStatsSummary(document.getElementById('stats-real-total'), stats.real.total);
+      renderStatsSummary(document.getElementById('stats-overall'), stats.overall);
+
+      renderStatsMarketTable(document.getElementById('stats-demo-market-body'), [
+        { label: 'Spot', ...stats.demo.spot }, { label: 'Futures', ...stats.demo.futures },
+      ]);
+      renderStatsMarketTable(document.getElementById('stats-real-market-body'), [
+        { label: 'Spot', ...stats.real.spot }, { label: 'Futures', ...stats.real.futures },
+      ]);
+
+      renderStatsStrategyTable(document.getElementById('stats-demo-strategy-body'), document.getElementById('stats-demo-strategy-empty'), stats.demo.byStrategy);
+      renderStatsStrategyTable(document.getElementById('stats-real-strategy-body'), document.getElementById('stats-real-strategy-empty'), stats.real.byStrategy);
+    } catch (err) {
+      toast(`Failed to load trading statistics: ${err.message}`, 'error');
+    }
   }
 
   // Limit/Stop/OCO orders awaiting a fill or trigger — separate from Order History's
@@ -1677,6 +1810,48 @@
     });
   }
 
+  // Separate table/endpoint from spot's risk settings above — futures open_long/open_short
+  // orders are checked against these, not api/risk-settings. See futures-controller.js#getRiskSettings.
+  async function loadFuturesRiskSettings(mode) {
+    document.getElementById('futures-risk-mode-badge').textContent = mode.toUpperCase();
+    document.getElementById('futures-risk-mode-badge').className = `mode-badge mode-badge--${mode}`;
+    try {
+      const settings = await Api.getFuturesRiskSettings(mode);
+      const form = document.getElementById('futures-risk-settings-form');
+      form.maxRiskPerTradePercent.value = settings.max_risk_per_trade_percent;
+      form.maxDailyLossPercent.value = settings.max_daily_loss_percent;
+      form.maxOpenPositions.value = settings.max_open_positions;
+      form.maxOrderValue.value = settings.max_order_value;
+      form.minRiskRewardRatio.value = settings.min_risk_reward_ratio;
+      form.maxPortfolioExposurePercent.value = settings.max_portfolio_exposure_percent;
+      form.maxLeverage.value = settings.max_leverage;
+    } catch (err) {
+      toast(`Failed to load futures risk settings: ${err.message}`, 'error');
+    }
+  }
+
+  function initFuturesRiskSettingsForm() {
+    document.getElementById('futures-risk-settings-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const mode = ModeSwitcher.getMode();
+      try {
+        await Api.updateFuturesRiskSettings(mode, {
+          maxRiskPerTradePercent: Number(form.maxRiskPerTradePercent.value),
+          maxDailyLossPercent: Number(form.maxDailyLossPercent.value),
+          maxOpenPositions: Number(form.maxOpenPositions.value),
+          maxOrderValue: Number(form.maxOrderValue.value),
+          minRiskRewardRatio: Number(form.minRiskRewardRatio.value),
+          maxPortfolioExposurePercent: Number(form.maxPortfolioExposurePercent.value),
+          maxLeverage: Number(form.maxLeverage.value),
+        });
+        toast('Futures risk settings saved.', 'success');
+      } catch (err) {
+        toast(`Failed to save futures risk settings: ${err.message}`, 'error');
+      }
+    });
+  }
+
   // ---------- emergency stop ----------
 
   function initEmergencyControls() {
@@ -1737,7 +1912,7 @@
     // The Futures half of the Signals Setting Results table depends on which mode is selected
     // (Demo/Real Futures Signals Setting are separate lists) — re-load it on every mode switch,
     // not just when the Spot watchlist itself changes.
-    ModeSwitcher.onChange((mode) => { loadRiskSettings(mode); refreshStatusBar(); loadLastWatchlistSignals(); });
+    ModeSwitcher.onChange((mode) => { loadRiskSettings(mode); loadFuturesRiskSettings(mode); refreshStatusBar(); loadLastWatchlistSignals(); });
 
     document.getElementById('load-asset-btn').addEventListener('click', loadAsset);
     document.getElementById('try-tradingview-btn').addEventListener('click', loadTradingViewChart);
@@ -1784,6 +1959,7 @@
     initBacktestForm();
     initOptimizer();
     initRiskSettingsForm();
+    initFuturesRiskSettingsForm();
     initEmergencyControls();
     initRealCredentialsForm();
     document.getElementById('refresh-real-balance-btn').addEventListener('click', () => refreshRealBalance());
@@ -1795,6 +1971,7 @@
     loadStrategyOptions().then(() => loadExchangeOptions().then(() => Promise.all([loadAsset(), refreshSymbolSuggestions()])).then(refreshSpotWatchlist));
     loadRealCredentialsExchangeOptions().then(refreshRealCredentialsStatus);
     loadRiskSettings(ModeSwitcher.getMode());
+    loadFuturesRiskSettings(ModeSwitcher.getMode());
     refreshStatusBar();
     refreshWatchList();
 

@@ -67,7 +67,7 @@ function persistRejected({ id, userId, symbol, exchange, action, leverage, stopL
  *
  * Market orders only, full-quantity close only (no partial) — see docs/architecture.md Phase 2.
  */
-async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, source = 'manual', strategyId, timeframe, trailingPercent }) {
+async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, source = 'manual', strategyId, timeframe, trailingPercent, reason }) {
   const id = uuidv4();
   action = String(action || '').toLowerCase();
 
@@ -96,7 +96,7 @@ async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', acti
   }
 
   if (action === 'close') {
-    return closeDemoFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source });
+    return closeDemoFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source, reason });
   }
 
   // open_long / open_short
@@ -171,13 +171,13 @@ async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', acti
   return order;
 }
 
-function closeDemoFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source }) {
+function closeDemoFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source, reason }) {
   const openPosition = futuresPositionsRepository.findOpenPositionBySymbol(MODE, userId, symbol);
   if (!openPosition) {
     return persistRejected({ id, userId, symbol, exchange, action: 'close', price, reasonCode: 'NO_OPEN_POSITION_TO_CLOSE', message: `No open Demo futures position for ${symbol}.`, idempotencyKey, signalId, source });
   }
 
-  const { realizedPnl } = futuresPortfolioService.closePosition(MODE, userId, openPosition.id, price);
+  const { realizedPnl } = futuresPortfolioService.closePosition(MODE, userId, openPosition.id, price, reason ?? 'manual');
   const closingAction = 'close';
 
   const order = futuresOrdersRepository.insertOrder(MODE, userId, {

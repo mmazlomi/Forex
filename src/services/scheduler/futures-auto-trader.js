@@ -4,6 +4,7 @@ const futuresAssetsRepository = require('../../database/repositories/futures-ass
 const futuresPositionsRepository = require('../../database/repositories/futures-positions-repository');
 const futuresPortfolioService = require('../portfolio/futures-portfolio-service');
 const signalsService = require('../signals');
+const { resolveTrailingPercent } = require('../risk/atr-trailing');
 const { placeDemoFuturesOrder } = require('../orders/futures-demo-orders');
 const { placeRealFuturesOrder } = require('../orders/futures-real-orders');
 const { resolveRealCredentials } = require('../exchanges/real-credentials-resolver');
@@ -114,14 +115,15 @@ async function processAsset(mode, asset, source, realCredCache) {
         logger.warn('futures-auto-trader', `Skipped ${action} for ${symbol}: signal had no stop/take-profit`, { userId }, mode);
         return;
       }
-      const orderArgs = { userId, symbol, exchange, action, leverage, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, signalId: signal.id, source, trailingPercent: asset.trailing_percent };
+      const trailingPercent = await resolveTrailingPercent(asset, { symbol, exchange, market: 'futures', timeframe: asset.default_timeframe });
+      const orderArgs = { userId, symbol, exchange, action, leverage, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, signalId: signal.id, source, trailingPercent };
       if (mode === 'real') orderArgs.unlockConfirmed = true; // no human present per-trade; gated by realAutoTradeGloballyAllowed() + list membership + per-user credentials instead
       const order = await placeOrder(orderArgs);
       logger.info('futures-auto-trader', `AI futures auto-trade ${action} ${order.status} for ${symbol}`, { mode, userId, orderId: order.id, leverage, rejectReason: order.reject_reason }, mode);
     }
 
     async function closeExisting() {
-      const orderArgs = { userId, symbol, exchange, action: 'close', signalId: signal.id, source };
+      const orderArgs = { userId, symbol, exchange, action: 'close', signalId: signal.id, source, reason: 'signal' };
       if (mode === 'real') orderArgs.unlockConfirmed = true;
       const order = await placeOrder(orderArgs);
       logger.info('futures-auto-trader', `AI futures auto-trade close ${order.status} for ${symbol}`, { mode, userId, orderId: order.id, rejectReason: order.reject_reason }, mode);

@@ -3,6 +3,7 @@
 const assetsRepository = require('../../database/repositories/assets-repository');
 const positionsRepository = require('../../database/repositories/positions-repository');
 const signalsService = require('../signals');
+const { resolveTrailingPercent } = require('../risk/atr-trailing');
 const { placeDemoOrder } = require('../orders/demo-orders');
 const { STRATEGY_ID: LSR_STRATEGY_ID } = require('../backtesting/reversal-backtest-engine');
 const logger = require('../logging/logger');
@@ -68,13 +69,14 @@ async function processAsset(asset) {
         logger.warn('auto-trader', `Skipped BUY for ${symbol}: signal had no stop/take-profit`, {}, MODE);
         return;
       }
+      const trailingPercent = await resolveTrailingPercent(asset, { symbol, exchange, market: 'spot', timeframe: asset.default_timeframe });
       const order = await placeDemoOrder({
         userId, symbol, exchange, side: 'buy', stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, signalId: signal.id,
-        trailingPercent: asset.trailing_percent,
+        trailingPercent,
       });
       logger.info('auto-trader', `AI auto-trade BUY ${order.status} for ${symbol}`, { orderId: order.id, rejectReason: order.reject_reason, userId }, MODE);
     } else if (signal.status === 'SELL' && openPosition) {
-      const order = await placeDemoOrder({ userId, symbol, exchange, side: 'sell', signalId: signal.id });
+      const order = await placeDemoOrder({ userId, symbol, exchange, side: 'sell', signalId: signal.id, reason: 'signal' });
       logger.info('auto-trader', `AI auto-trade SELL ${order.status} for ${symbol}`, { orderId: order.id, rejectReason: order.reject_reason, userId }, MODE);
     }
     // HOLD, NO_DATA, a BUY while already positioned, or a SELL with nothing open: no action.

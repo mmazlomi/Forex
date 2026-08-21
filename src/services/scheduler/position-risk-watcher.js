@@ -140,7 +140,7 @@ async function checkSpotPositions(mode) {
       if (!reason) continue;
 
       const placeOrder = mode === 'real' ? placeRealOrder : placeDemoOrder;
-      const args = { userId: position.user_id, symbol: position.symbol, exchange: position.exchange, side: 'sell' };
+      const args = { userId: position.user_id, symbol: position.symbol, exchange: position.exchange, side: 'sell', reason };
       if (mode === 'real') args.unlockConfirmed = true; // no human present per-trade, same convention as futures-auto-trader's source:'auto' closes
 
       const order = await placeOrder(args);
@@ -182,7 +182,7 @@ async function checkFuturesPositions(mode) {
       if (!reason) continue;
 
       const placeOrder = mode === 'real' ? placeRealFuturesOrder : placeDemoFuturesOrder;
-      const args = { userId: position.user_id, symbol: position.symbol, exchange: position.exchange, action: 'close', source: 'auto' };
+      const args = { userId: position.user_id, symbol: position.symbol, exchange: position.exchange, action: 'close', source: 'auto', reason };
       if (mode === 'real') args.unlockConfirmed = true;
 
       const order = await placeOrder(args);
