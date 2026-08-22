@@ -81,7 +81,7 @@ function getSnapshot(mode, userId) {
 // full explanation. Side-aware here (unlike spot, which is always long): the high-water-mark
 // starts at entryPrice and only ever moves in the position's favor — up for a long, down for a
 // short — with stop_loss following it, never loosening.
-function openPosition(mode, userId, { symbol, exchange, side, leverage, qty, entryPrice, stopLoss, takeProfit, liquidationPrice, signalId, source, strategyId: explicitStrategyId, timeframe: explicitTimeframe, trailingPercent }) {
+function openPosition(mode, userId, { symbol, exchange, side, leverage, qty, entryPrice, stopLoss, takeProfit, liquidationPrice, signalId, source, strategyId: explicitStrategyId, timeframe: explicitTimeframe, trailingPercent, adaptiveTp }) {
   const resolved = resolvePositionStrategy(signalId);
   const strategyId = explicitStrategyId ?? resolved.strategyId;
   const timeframe = explicitTimeframe ?? resolved.timeframe;
@@ -106,6 +106,20 @@ function openPosition(mode, userId, { symbol, exchange, side, leverage, qty, ent
     timeframe,
     trailingPercent: hasTrailing ? trailingPercent : null,
     trailingHighWaterMark: hasTrailing ? entryPrice : null,
+    ...(adaptiveTp ? {
+      adaptiveTpEnabled: 1,
+      entryAtr: adaptiveTp.entryAtr ?? null,
+      rMultiple: adaptiveTp.rMultiple ?? null,
+      entryContextJson: adaptiveTp.entryContextJson ?? null,
+      tp1Price: adaptiveTp.tp1Price ?? null,
+      tp2Price: adaptiveTp.tp2Price ?? null,
+      tp3Price: adaptiveTp.tp3Price ?? null,
+      tp1QtyPercent: adaptiveTp.tp1QtyPercent ?? null,
+      tp2QtyPercent: adaptiveTp.tp2QtyPercent ?? null,
+      tp3QtyPercent: adaptiveTp.tp3QtyPercent ?? null,
+      recommendedTrailingMultiplier: adaptiveTp.recommendedTrailingMultiplier ?? null,
+      exitReversalConditionsJson: adaptiveTp.exitReversalConditionsJson ?? null,
+    } : {}),
   });
 }
 
@@ -113,17 +127,40 @@ function openPosition(mode, userId, { symbol, exchange, side, leverage, qty, ent
  *  a rise, short profits on a fall) and crediting/debiting their futures cash (margin currency)
  *  balance. exitReason ('stop_loss' | 'take_profit' | 'signal' | 'manual') records why, for the
  *  trade-history display — see positions-repository.js#closePosition. */
+// See portfolio-service.js#closePosition's identical comment: always the final leg, position.qty
+// is remaining qty, realized_pnl = realized_pnl_partial_sum (prior legs) + this leg, balance is
+// only credited this leg's P&L. Byte-identical to pre-partial-exit behavior when
+// realized_pnl_partial_sum is 0 (every non-adaptive position).
 function closePosition(mode, userId, positionId, exitPrice, exitReason = 'manual') {
   const position = futuresPositionsRepository.getPosition(mode, userId, positionId);
   if (!position || position.status !== 'open') {
     throw new Error(`No open futures position ${positionId} in mode "${mode}" for this user`);
   }
-  const realizedPnl = directionOf(position) * (exitPrice - position.entry_price) * position.qty;
+  const finalLegPnl = directionOf(position) * (exitPrice - position.entry_price) * position.qty;
+  const realizedPnl = (position.realized_pnl_partial_sum || 0) + finalLegPnl;
 
   const portfolio = futuresPortfolioRepository.ensureInitialized(mode, userId, mode === 'demo' ? config.initialDemoBalance : 0);
-  futuresPortfolioRepository.setBalance(mode, userId, portfolio.balance + realizedPnl);
+  futuresPortfolioRepository.setBalance(mode, userId, portfolio.balance + finalLegPnl);
 
   return { ...futuresPositionsRepository.closePosition(mode, userId, positionId, { exitPrice, realizedPnl, exitReason }), realizedPnl };
+}
+
+/** Futures twin of portfolio-service.js#partialClosePosition — identical shape, direction-aware
+ *  (directionOf) instead of the spot always-long assumption. See that function's doc comment. */
+function partialClosePosition(mode, userId, positionId, { level, qty, exitPrice, feePercent = null }) {
+  const position = futuresPositionsRepository.getPosition(mode, userId, positionId);
+  if (!position || position.status !== 'open') {
+    throw new Error(`No open futures position ${positionId} in mode "${mode}" for this user`);
+  }
+  const pnl = directionOf(position) * (exitPrice - position.entry_price) * qty;
+
+  const portfolio = futuresPortfolioRepository.ensureInitialized(mode, userId, mode === 'demo' ? config.initialDemoBalance : 0);
+  futuresPortfolioRepository.setBalance(mode, userId, portfolio.balance + pnl);
+
+  const updated = futuresPositionsRepository.recordPartialExit(mode, userId, positionId, {
+    level, qty, price: exitPrice, pnl, feePercent, closedAtUtc: new Date().toISOString(),
+  });
+  return { ...updated, pnl };
 }
 
 function getPnlSummary(mode, userId) {
@@ -185,6 +222,7 @@ module.exports = {
   getDailyLossSoFar,
   openPosition,
   closePosition,
+  partialClosePosition,
   getPnlSummary,
   getOpenPositionsWithUnrealizedPnl,
   getAllOpenPositionsWithUnrealizedPnl,

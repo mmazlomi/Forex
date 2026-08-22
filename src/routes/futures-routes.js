@@ -33,6 +33,9 @@ router.put('/assets/:symbol/strategy', requireValidMode, asyncHandler(controller
 router.put('/assets/:symbol/timeframe', requireValidMode, asyncHandler(controller.setTimeframe));
 router.put('/assets/:symbol/strategy-mode', requireValidMode, asyncHandler(controller.setStrategyMode));
 router.put('/assets/:symbol/trailing', requireValidMode, asyncHandler(controller.setTrailingPercent));
+router.put('/assets/:symbol/lsr-timeframe-mode', requireValidMode, asyncHandler(controller.setLsrTimeframeMode));
+router.put('/assets/:symbol/lsr-timeframes', requireValidMode, asyncHandler(controller.setLsrManualTimeframes));
+router.put('/assets/:symbol/adaptive-tp', requireValidMode, asyncHandler(controller.setAdaptiveTp));
 
 router.get('/risk-settings', requireValidMode, asyncHandler(controller.getRiskSettings));
 router.put('/risk-settings', requireValidMode, asyncHandler(controller.putRiskSettings));

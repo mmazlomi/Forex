@@ -23,12 +23,17 @@ const MIN_TRAILING_PERCENT = 0.1;
 const MAX_TRAILING_PERCENT = 20;
 
 /**
- * Fetches recent candles + live price and returns the ATR(14) x 2 distance as a percent of price,
- * clamped to [MIN_TRAILING_PERCENT, MAX_TRAILING_PERCENT]. Returns null (never throws) if there
- * isn't enough candle history yet or the live price can't be fetched — callers treat null the same
- * as "trailing not enabled" rather than blocking the trade on it.
+ * Fetches recent candles + live price and returns the ATR(period) x atrMultiplier distance as a
+ * percent of price, clamped to [MIN_TRAILING_PERCENT, MAX_TRAILING_PERCENT]. Returns null (never
+ * throws) if there isn't enough candle history yet or the live price can't be fetched — callers
+ * treat null the same as "trailing not enabled" rather than blocking the trade on it.
+ * `atrMultiplier` defaults to the fixed ATR_MULTIPLIER (2) used by 'atr'-trailing-mode assets, but
+ * is overridable — position-risk-watcher.js#seedAdaptiveTrailing passes an adaptive-TP position's
+ * own `recommended_trailing_multiplier` (computeAdaptiveTargets' per-trade recommendation) instead
+ * of the fixed default once TP1 fires, reusing this exact same ATR-to-percent conversion rather
+ * than duplicating it.
  */
-async function resolveAtrTrailingPercent({ symbol, exchange, market, timeframe }) {
+async function resolveAtrTrailingPercent({ symbol, exchange, market, timeframe, atrMultiplier = ATR_MULTIPLIER }) {
   const effectiveTimeframe = timeframe || '1h';
   const [candles, snapshot] = await Promise.all([
     marketDataService.getCandles({ symbol, exchange, timeframe: effectiveTimeframe, limit: ATR_PERIOD + 10, market }),
@@ -42,7 +47,7 @@ async function resolveAtrTrailingPercent({ symbol, exchange, market, timeframe }
   const result = atr.compute(candles, { period: ATR_PERIOD });
   if (result.status !== 'ok' || typeof result.value !== 'number') return null;
 
-  const rawPercent = (result.value * ATR_MULTIPLIER / snapshot.price) * 100;
+  const rawPercent = (result.value * atrMultiplier / snapshot.price) * 100;
   return Math.min(MAX_TRAILING_PERCENT, Math.max(MIN_TRAILING_PERCENT, rawPercent));
 }
 

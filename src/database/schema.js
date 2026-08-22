@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS assets (
   real_auto_trade_enabled INTEGER NOT NULL DEFAULT 0,
   trailing_percent REAL,
   trailing_mode TEXT NOT NULL DEFAULT 'fixed',
+  lsr_timeframe_mode TEXT NOT NULL DEFAULT 'manual',
+  lsr_htf_timeframe TEXT,
+  lsr_signal_timeframe TEXT,
+  lsr_entry_timeframe TEXT,
+  lsr_selected_timeframes_json TEXT,
+  lsr_timeframe_selection_updated_at_utc TEXT,
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -443,6 +449,12 @@ CREATE TABLE IF NOT EXISTS demo_futures_assets (
   strategy_selection_updated_at_utc TEXT,
   trailing_percent REAL,
   trailing_mode TEXT NOT NULL DEFAULT 'fixed',
+  lsr_timeframe_mode TEXT NOT NULL DEFAULT 'manual',
+  lsr_htf_timeframe TEXT,
+  lsr_signal_timeframe TEXT,
+  lsr_entry_timeframe TEXT,
+  lsr_selected_timeframes_json TEXT,
+  lsr_timeframe_selection_updated_at_utc TEXT,
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -461,6 +473,12 @@ CREATE TABLE IF NOT EXISTS real_futures_assets (
   strategy_selection_updated_at_utc TEXT,
   trailing_percent REAL,
   trailing_mode TEXT NOT NULL DEFAULT 'fixed',
+  lsr_timeframe_mode TEXT NOT NULL DEFAULT 'manual',
+  lsr_htf_timeframe TEXT,
+  lsr_signal_timeframe TEXT,
+  lsr_entry_timeframe TEXT,
+  lsr_selected_timeframes_json TEXT,
+  lsr_timeframe_selection_updated_at_utc TEXT,
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -725,6 +743,103 @@ function migrateAddAssetTrailingModeColumn(db, table) {
   }
 }
 
+// One-time migration for databases created before the Adaptive Take-Profit engine could be wired
+// into live trading: assets/demo_futures_assets/real_futures_assets gain adaptive_tp_enabled
+// (opt-in flag, default off — same "one flag, per-asset" shape as trailing_mode; an asset that
+// never opts in sees zero behavior change) and adaptive_tp_config_json (optional per-asset
+// override merged over adaptive-take-profit-config.js's DEFAULT_CONFIG via mergeConfig; null means
+// "use the global default config" for every field).
+function migrateAddAssetAdaptiveTpColumn(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  const names = new Set(columns.map((c) => c.name));
+  if (!names.has('adaptive_tp_enabled')) db.exec(`ALTER TABLE ${table} ADD COLUMN adaptive_tp_enabled INTEGER NOT NULL DEFAULT 0`);
+  if (!names.has('adaptive_tp_config_json')) db.exec(`ALTER TABLE ${table} ADD COLUMN adaptive_tp_config_json TEXT`);
+}
+
+// One-time migration for databases created before LSR's auto timeframe-selection existed:
+// assets/demo_futures_assets/real_futures_assets gain lsr_timeframe_mode ('manual' default —
+// unchanged behavior, the global 4h/15m/5m default still applies — or 'auto', which opts this
+// asset into lsr-timeframe-selector.js), lsr_htf_timeframe/lsr_signal_timeframe/
+// lsr_entry_timeframe (manual per-asset override, null = use the global default), and
+// lsr_selected_timeframes_json/lsr_timeframe_selection_updated_at_utc (the selector's own output
+// when in 'auto' mode) — same "mode + selected_json + updated_at" shape as
+// strategy_mode/selected_strategy_ids_json/strategy_selection_updated_at_utc, deliberately kept
+// as a parallel, independent set of columns since strategy selection and LSR timeframe selection
+// are orthogonal (an LSR asset never uses strategy_mode/selected_strategy_ids_json at all).
+function migrateAddLsrTimeframeColumns(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  const names = new Set(columns.map((c) => c.name));
+  const adds = {
+    lsr_timeframe_mode: "TEXT NOT NULL DEFAULT 'manual'",
+    lsr_htf_timeframe: 'TEXT',
+    lsr_signal_timeframe: 'TEXT',
+    lsr_entry_timeframe: 'TEXT',
+    lsr_selected_timeframes_json: 'TEXT',
+    lsr_timeframe_selection_updated_at_utc: 'TEXT',
+  };
+  for (const [col, ddl] of Object.entries(adds)) {
+    if (!names.has(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+  }
+}
+
+// One-time migration for databases created before the Adaptive Take-Profit/partial-exit engine
+// existed: demo_positions/real_positions/demo_futures_positions/real_futures_positions gain
+// adaptive_tp_enabled (opt-in flag, same "one flag, default off" shape as trailing_mode — a
+// pre-existing row or a position opened from a non-opted-in asset behaves byte-identically to
+// today), initial_qty (immutable snapshot of qty as opened; `qty` itself becomes "remaining open
+// qty" once partial exits start decrementing it — see positions-repository.js#recordPartialExit),
+// entry_atr/r_multiple/entry_context_json (a snapshot of the volatility/trend/structure/volume
+// context computeAdaptiveTargets was given at entry, for post-hoc review), tp1/2/3_price +
+// tp1/2/3_qty_percent (the three target legs and what fraction of initial_qty each closes — always
+// against initial_qty, never a shrinking base, per adaptive-take-profit-config.js's validated
+// percentages), tp1/2/3_filled_at_utc + tp1/2/3_fill_price (null until that tier actually fires),
+// recommended_trailing_multiplier (seeds the trailing-stop distance once TP1 fires — see
+// position-risk-watcher.js), realized_pnl_partial_sum (running total of every partial leg's P&L;
+// the final close adds its own leg on top of this rather than recomputing against the original
+// qty — see portfolio-service.js#closePosition), partial_exits_json (append-only log of every
+// fired leg: {level,qty,price,feePercent,pnl,closedAtUtc}), and exit_reversal_conditions_json
+// (the structural reversal-exit conditions computeAdaptiveTargets derived at entry, checked live
+// by position-risk-watcher.js#checkReversalExit). Backfill: initial_qty = qty for every
+// pre-existing row (exact for an untouched position; the correct value regardless for adaptive
+// ones too, since this migration only ever runs before any adaptive position could exist).
+function migrateAddAdaptiveTakeProfitColumns(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  const names = new Set(columns.map((c) => c.name));
+  const adds = {
+    adaptive_tp_enabled: 'INTEGER NOT NULL DEFAULT 0',
+    initial_qty: 'REAL',
+    entry_atr: 'REAL',
+    r_multiple: 'REAL',
+    entry_context_json: 'TEXT',
+    tp1_price: 'REAL',
+    tp2_price: 'REAL',
+    tp3_price: 'REAL',
+    tp1_qty_percent: 'REAL',
+    tp2_qty_percent: 'REAL',
+    tp3_qty_percent: 'REAL',
+    tp1_filled_at_utc: 'TEXT',
+    tp2_filled_at_utc: 'TEXT',
+    tp3_filled_at_utc: 'TEXT',
+    tp1_fill_price: 'REAL',
+    tp2_fill_price: 'REAL',
+    tp3_fill_price: 'REAL',
+    recommended_trailing_multiplier: 'REAL',
+    realized_pnl_partial_sum: 'REAL NOT NULL DEFAULT 0',
+    partial_exits_json: 'TEXT',
+    exit_reversal_conditions_json: 'TEXT',
+  };
+  let justAddedInitialQty = false;
+  for (const [col, ddl] of Object.entries(adds)) {
+    if (!names.has(col)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+      if (col === 'initial_qty') justAddedInitialQty = true;
+    }
+  }
+  if (justAddedInitialQty) {
+    db.exec(`UPDATE ${table} SET initial_qty = qty WHERE initial_qty IS NULL`);
+  }
+}
+
 // One-time migration for databases created before the Futures watchlist was split into fully
 // independent Demo/Real lists: the old `futures_assets` table had ONE row per symbol with two
 // flags (auto_trade_enabled for Demo, real_auto_trade_enabled for Real) — this copies each row
@@ -974,10 +1089,13 @@ function applySchema(db) {
     migrateAddPositionStrategyColumns(db, table);
     migrateAddTrailingStopColumns(db, table);
     migrateAddExitDetailColumns(db, table);
+    migrateAddAdaptiveTakeProfitColumns(db, table);
   }
   for (const table of ['assets', 'demo_futures_assets', 'real_futures_assets']) {
     migrateAddAssetTrailingColumn(db, table);
     migrateAddAssetTrailingModeColumn(db, table);
+    migrateAddLsrTimeframeColumns(db, table);
+    migrateAddAssetAdaptiveTpColumn(db, table);
   }
 }
 

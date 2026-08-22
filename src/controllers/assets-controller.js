@@ -170,6 +170,26 @@ async function setTrailingPercent(req, res) {
   sendSuccess(res, asset, message);
 }
 
+// Opt-in flag for the Adaptive Take-Profit engine (see risk/adaptive-take-profit-resolver.js) —
+// off by default, affects only positions opened after this is saved, same "opt-in, forward-only"
+// contract as setTrailingPercent above.
+async function setAdaptiveTp(req, res) {
+  const { symbol } = req.params;
+  const { exchange } = req.query;
+  const { enabled } = req.body || {};
+  if (!exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
+  }
+  if (typeof enabled !== 'boolean') {
+    return sendError(res, 'VALIDATION_ERROR', 'enabled must be a boolean.');
+  }
+  const asset = assetsRepository.setAdaptiveTpEnabled(req.user.id, symbol, exchange, enabled);
+  if (!asset) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
+  }
+  sendSuccess(res, asset, `Adaptive Take-Profit ${enabled ? 'enabled' : 'disabled'} for ${symbol}.`);
+}
+
 // Moves a watchlist entry to a different exchange without removing/re-adding it — same crypto
 // market validation as addAsset (a symbol valid on one exchange isn't guaranteed valid on
 // another) plus a check that the destination (symbol, newExchange) pair isn't already on the
@@ -230,4 +250,53 @@ async function setStrategyMode(req, res) {
   sendSuccess(res, asset, `Strategy mode set to "${mode}" for ${symbol}.`);
 }
 
-module.exports = { listAssets, addAsset, removeAsset, setAutoTrade, setRealAutoTrade, setStrategy, setTimeframe, setExchange, setStrategyMode, setTrailingPercent };
+const LSR_TIMEFRAME_MODES = ['manual', 'auto'];
+
+// 'auto' opts this LSR asset into lsr-timeframe-selector.js's periodic backtesting of candidate
+// htf/signal/entry timeframe triples — see assets-repository.js#setLsrTimeframeMode's comment.
+// Switching modes never clears a prior lsr_selected_timeframes_json; it's simply ignored while in
+// 'manual' mode. Meaningless (and harmless) for a non-LSR asset — this app never reads these
+// columns for anything but an LSR-tagged asset.
+async function setLsrTimeframeMode(req, res) {
+  const { symbol } = req.params;
+  const { exchange } = req.query;
+  const { mode } = req.body || {};
+  if (!exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
+  }
+  if (!LSR_TIMEFRAME_MODES.includes(mode)) {
+    return sendError(res, 'VALIDATION_ERROR', `mode must be one of: ${LSR_TIMEFRAME_MODES.join(', ')}.`);
+  }
+  const asset = assetsRepository.setLsrTimeframeMode(req.user.id, symbol, exchange, mode);
+  if (!asset) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
+  }
+  sendSuccess(res, asset, `LSR timeframe mode set to "${mode}" for ${symbol}.`);
+}
+
+// Manual per-asset htf/signal/entry timeframe override — used only while lsr_timeframe_mode is
+// 'manual' (the default). Any field omitted or null clears that override back to the global
+// default (reversal-strategy/config.js's DEFAULT_CONFIG).
+async function setLsrManualTimeframes(req, res) {
+  const { symbol } = req.params;
+  const { exchange } = req.query;
+  const { htfTimeframe, signalTimeframe, entryTimeframe } = req.body || {};
+  if (!exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
+  }
+  for (const [key, value] of Object.entries({ htfTimeframe, signalTimeframe, entryTimeframe })) {
+    if (value != null && !SUPPORTED_TIMEFRAMES.includes(value)) {
+      return sendError(res, 'VALIDATION_ERROR', `${key} must be one of ${SUPPORTED_TIMEFRAMES.join(', ')}, or null.`);
+    }
+  }
+  const asset = assetsRepository.setLsrManualTimeframes(req.user.id, symbol, exchange, { htfTimeframe, signalTimeframe, entryTimeframe });
+  if (!asset) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
+  }
+  sendSuccess(res, asset, `LSR timeframe override updated for ${symbol}.`);
+}
+
+module.exports = {
+  listAssets, addAsset, removeAsset, setAutoTrade, setRealAutoTrade, setStrategy, setTimeframe, setExchange, setStrategyMode, setTrailingPercent,
+  setLsrTimeframeMode, setLsrManualTimeframes, setAdaptiveTp,
+};

@@ -86,6 +86,18 @@ function setTrailingPercent(mode, userId, symbol, exchange, trailingPercent, tra
   return getAsset(mode, userId, symbol, exchange);
 }
 
+/** Futures twin of assets-repository.js#setAdaptiveTpEnabled — mode-scoped like every other
+ *  futures watchlist setter (demo/real are fully independent watchlists). */
+function setAdaptiveTpEnabled(mode, userId, symbol, exchange, enabled) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  const result = db
+    .prepare(`UPDATE ${table} SET adaptive_tp_enabled = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
+    .run(enabled ? 1 : 0, userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(mode, userId, symbol, exchange);
+}
+
 // Not scoped by user_id, same reasoning as assets-repository.js's listAutoTradeEnabled(): there
 // is one shared background futures auto-trader, which must see every account's enabled rows.
 function listAutoTradeEnabled(mode) {
@@ -147,8 +159,49 @@ function listAutoStrategyModeAssets(mode) {
   return db.prepare(`SELECT * FROM ${table} WHERE strategy_mode = 'auto'`).all();
 }
 
+// Mirrors assets-repository.js's identical quartet of LSR timeframe-selection functions — see
+// their comments. 'manual' (default) keeps the global 4h/15m/5m default or this asset's own
+// override; 'auto' opts into lsr-timeframe-selector.js.
+function setLsrTimeframeMode(mode, userId, symbol, exchange, timeframeMode) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  const result = db
+    .prepare(`UPDATE ${table} SET lsr_timeframe_mode = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
+    .run(timeframeMode, userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(mode, userId, symbol, exchange);
+}
+
+function setLsrManualTimeframes(mode, userId, symbol, exchange, { htfTimeframe, signalTimeframe, entryTimeframe }) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  const result = db
+    .prepare(`UPDATE ${table} SET lsr_htf_timeframe = ?, lsr_signal_timeframe = ?, lsr_entry_timeframe = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
+    .run(htfTimeframe ?? null, signalTimeframe ?? null, entryTimeframe ?? null, userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(mode, userId, symbol, exchange);
+}
+
+function setLsrSelectedTimeframes(mode, userId, symbol, exchange, timeframes) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  const result = db
+    .prepare(`UPDATE ${table} SET lsr_selected_timeframes_json = ?, lsr_timeframe_selection_updated_at_utc = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
+    .run(JSON.stringify(timeframes), new Date().toISOString(), userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(mode, userId, symbol, exchange);
+}
+
+function listLsrAutoTimeframeModeAssets(mode) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  return db.prepare(`SELECT * FROM ${table} WHERE lsr_timeframe_mode = 'auto'`).all();
+}
+
 module.exports = {
   listAssets, getAsset, addAsset, removeAsset, setAutoTrade, setLeverage, setExchange,
   listAutoTradeEnabled, setStrategy, setTimeframe,
   setStrategyMode, setSelectedStrategies, listAutoStrategyModeAssets, setTrailingPercent,
+  setLsrTimeframeMode, setLsrManualTimeframes, setLsrSelectedTimeframes, listLsrAutoTimeframeModeAssets,
+  setAdaptiveTpEnabled,
 };

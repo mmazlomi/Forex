@@ -106,6 +106,18 @@ function setTrailingPercent(userId, symbol, exchange, trailingPercent, trailingM
   return getAsset(userId, symbol, exchange);
 }
 
+// Opt-in flag for adaptive-take-profit-resolver.js — see schema.js#migrateAddAssetAdaptiveTpColumn.
+// Off by default; an asset that never opts in sees zero behavior change from the fixed-formula
+// take-profit it already had.
+function setAdaptiveTpEnabled(userId, symbol, exchange, enabled) {
+  const db = getDb();
+  const result = db
+    .prepare('UPDATE assets SET adaptive_tp_enabled = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
+    .run(enabled ? 1 : 0, userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(userId, symbol, exchange);
+}
+
 // Moves this watchlist entry to a different exchange in place, instead of the user having to
 // remove and re-add it (see addAsset's UNIQUE(user_id, symbol, exchange) — this is a real key
 // change, not a plain field update like setStrategy/setTimeframe above). Caller is responsible
@@ -165,8 +177,53 @@ function listAutoStrategyModeAssets() {
   return db.prepare("SELECT * FROM assets WHERE strategy_mode = 'auto'").all();
 }
 
+// LSR timeframe selection — orthogonal to strategy_mode/selected_strategy_ids_json above (an LSR
+// asset never uses those at all). 'manual' (default) keeps using the global 4h/15m/5m default, or
+// this asset's own lsr_htf_timeframe/lsr_signal_timeframe/lsr_entry_timeframe override if set.
+// 'auto' opts this asset into lsr-timeframe-selector.js, which periodically backtests a set of
+// candidate timeframe triples and fills in lsr_selected_timeframes_json below. Switching back to
+// 'manual' does not clear a prior selection, same convention as setStrategyMode.
+function setLsrTimeframeMode(userId, symbol, exchange, mode) {
+  const db = getDb();
+  const result = db
+    .prepare('UPDATE assets SET lsr_timeframe_mode = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
+    .run(mode, userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(userId, symbol, exchange);
+}
+
+// Manual per-asset timeframe override (used only while lsr_timeframe_mode='manual') — each field
+// null clears that override back to the global default; only present keys are updated.
+function setLsrManualTimeframes(userId, symbol, exchange, { htfTimeframe, signalTimeframe, entryTimeframe }) {
+  const db = getDb();
+  const result = db
+    .prepare('UPDATE assets SET lsr_htf_timeframe = ?, lsr_signal_timeframe = ?, lsr_entry_timeframe = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
+    .run(htfTimeframe ?? null, signalTimeframe ?? null, entryTimeframe ?? null, userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(userId, symbol, exchange);
+}
+
+// Called only by lsr-timeframe-selector.js's runCycle() after a successful backtest ranking —
+// same "JSON blob + fresh timestamp" shape as setSelectedStrategies above.
+function setLsrSelectedTimeframes(userId, symbol, exchange, timeframes) {
+  const db = getDb();
+  const result = db
+    .prepare('UPDATE assets SET lsr_selected_timeframes_json = ?, lsr_timeframe_selection_updated_at_utc = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
+    .run(JSON.stringify(timeframes), new Date().toISOString(), userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(userId, symbol, exchange);
+}
+
+// Not scoped by user_id — same shared-background-scheduler exception as listAutoStrategyModeAssets.
+function listLsrAutoTimeframeModeAssets() {
+  const db = getDb();
+  return db.prepare("SELECT * FROM assets WHERE lsr_timeframe_mode = 'auto'").all();
+}
+
 module.exports = {
   listAssets, getAsset, addAsset, removeAsset, setAutoTrade, listAutoTradeEnabled, setStrategy, setTimeframe,
   setExchange, setStrategyMode, setSelectedStrategies, listAutoStrategyModeAssets,
   claimOrphanedAssets, setRealAutoTrade, listRealAutoTradeEnabled, setTrailingPercent,
+  setLsrTimeframeMode, setLsrManualTimeframes, setLsrSelectedTimeframes, listLsrAutoTimeframeModeAssets,
+  setAdaptiveTpEnabled,
 };

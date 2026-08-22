@@ -18,6 +18,7 @@ const futuresAutoTrader = require('./src/services/scheduler/futures-auto-trader'
 const reversalAutoTrader = require('./src/services/scheduler/reversal-auto-trader');
 const reversalSpotAutoTrader = require('./src/services/scheduler/reversal-spot-auto-trader');
 const strategySelector = require('./src/services/scheduler/strategy-selector');
+const lsrTimeframeSelector = require('./src/services/scheduler/lsr-timeframe-selector');
 
 const KNOWN_SECRETS = [
   config.demoExchange.apiKey,
@@ -108,6 +109,7 @@ function start() {
   reversalAutoTrader.start();
   reversalSpotAutoTrader.start();
   strategySelector.start();
+  lsrTimeframeSelector.start();
 
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {

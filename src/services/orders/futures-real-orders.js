@@ -19,6 +19,8 @@ const { isStopLossSafeFromLiquidation } = require('./liquidation-estimate');
 const MODE = 'real';
 const DUPLICATE_WINDOW_MS = 5000;
 const MAX_DATA_AGE_MS = 5 * 60 * 1000;
+// See demo-orders.js's identical constant/comment — same dust-fraction fallback-to-full-close rule.
+const DUST_QTY_FRACTION = 0.01;
 
 // KuCoin's unified ccxt futures symbol format is BASE/QUOTE:SETTLE (e.g. BTC/USDT:USDT) — a
 // completely different shape from spot's BASE/QUOTE, confirmed live via loadMarkets() against
@@ -90,7 +92,7 @@ function persistRejected({ id, userId, symbol, exchange, action, leverage, stopL
  * own credential check is the final, defense-in-depth gate for this specific real-money call,
  * regardless of what the auto-trader's cycle-level cache already decided.
  */
-async function placeRealFuturesOrder({ userId, symbol, exchange = 'kucoin', action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, source = 'manual', strategyId, timeframe, trailingPercent, reason }) {
+async function placeRealFuturesOrder({ userId, symbol, exchange = 'kucoin', action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, source = 'manual', strategyId, timeframe, trailingPercent, reason, adaptiveTp }) {
   const id = uuidv4();
   action = String(action || '').toLowerCase();
 
@@ -253,7 +255,7 @@ async function placeRealFuturesOrder({ userId, symbol, exchange = 'kucoin', acti
   }
 
   const position = futuresPortfolioService.openPosition(MODE, userId, {
-    symbol, exchange, side, leverage, qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, liquidationPrice, signalId, source, strategyId, timeframe, trailingPercent,
+    symbol, exchange, side, leverage, qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, liquidationPrice, signalId, source, strategyId, timeframe, trailingPercent, adaptiveTp,
   });
 
   const order = futuresOrdersRepository.insertOrder(MODE, userId, {
@@ -304,4 +306,81 @@ async function closeRealFuturesPosition({ id, userId, symbol, exchange, price, i
   return order;
 }
 
-module.exports = { placeRealFuturesOrder, marginCurrencyFor };
+/**
+ * Futures twin of real-orders.js#placeRealPartialClose — same gate order (live-trading ->
+ * credentials -> unlockConfirmed -> emergency-stop) replicated here since this is a new entrypoint
+ * that never goes through placeRealFuturesOrder's dispatch, then the same position/tier race
+ * checks as the demo twin before ever reaching KuCoin. `reduceOnly: true` on the exchange call is
+ * the same safety property closeRealFuturesPosition already relies on — it can only shrink the
+ * existing position, never flip or add to it, even if closeQty were ever wrong.
+ */
+async function placeRealFuturesPartialClose({ userId, symbol, exchange, level, closeQty, unlockConfirmed, reason }) {
+  const id = uuidv4();
+
+  if (!config.enableLiveTrading) {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'LIVE_TRADING_DISABLED', message: 'ENABLE_LIVE_TRADING is not set to true in .env.' });
+  }
+  const credentials = resolveRealCredentials(userId);
+  if (!credentials.name || !credentials.apiKey || !credentials.apiSecret) {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'MISSING_REAL_CREDENTIALS', message: 'Real exchange credentials are not fully configured.' });
+  }
+  if (!unlockConfirmed) {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'REAL_TRADING_NOT_UNLOCKED', message: 'The UI real-trading unlock/confirmation step was not completed for this request.' });
+  }
+  if (emergencyStopRepository.isActive(MODE, userId)) {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'EMERGENCY_STOP_ACTIVE', message: 'Real futures trading is halted by an active emergency stop.' });
+  }
+
+  const openPosition = futuresPositionsRepository.findOpenPositionBySymbol(MODE, userId, symbol);
+  if (!openPosition) {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'NO_OPEN_POSITION_TO_CLOSE', message: `No open Real futures position for ${symbol} to partially close.` });
+  }
+  if (!openPosition.adaptive_tp_enabled) {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'ADAPTIVE_TP_NOT_ENABLED', message: `Position ${openPosition.id} for ${symbol} is not adaptive-TP enabled.` });
+  }
+  if (openPosition[`tp${level}_filled_at_utc`]) {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'TP_TIER_ALREADY_FILLED', message: `TP${level} for ${symbol} is already filled — refusing a duplicate partial close.` });
+  }
+
+  const snapshot = await marketDataService.getFuturesSnapshot({ symbol, exchange: exchange || openPosition.exchange });
+  if (snapshot.status !== 'ok' || typeof snapshot.price !== 'number') {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'INVALID_PRICE', message: snapshot.error || 'Market price unavailable' });
+  }
+  const price = snapshot.price;
+
+  const dustQty = (openPosition.initial_qty ?? openPosition.qty) * DUST_QTY_FRACTION;
+  if (closeQty >= openPosition.qty || openPosition.qty - closeQty <= dustQty) {
+    return closeRealFuturesPosition({ id, userId, symbol, exchange, price, reason: reason ?? 'take_profit' });
+  }
+
+  const client = exchangeClientFactory.getRealFuturesExchange(userId);
+  const closingSide = openPosition.side === 'long' ? 'sell' : 'buy';
+  let exchangeResponse;
+  try {
+    exchangeResponse = await client.createOrder(symbol, 'market', closingSide, closeQty, undefined, { reduceOnly: true });
+  } catch (err) {
+    logger.error('futures-real-orders', `Exchange futures partial-close order failed for ${symbol}: ${err.message}`, {}, MODE);
+    realAuditLogRepository.insertAuditEntry({ userId, orderId: id, requestJson: JSON.stringify({ symbol, action: 'close', qty: closeQty, level }), responseJson: JSON.stringify({ error: err.message }) });
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', price, reasonCode: 'EXCHANGE_ORDER_FAILED', message: err.message });
+  }
+
+  realAuditLogRepository.insertAuditEntry({
+    userId, orderId: id,
+    requestJson: JSON.stringify({ symbol, action: 'close', qty: closeQty, level }),
+    responseJson: JSON.stringify(exchangeResponse),
+  });
+
+  const { pnl } = futuresPortfolioService.partialClosePosition(MODE, userId, openPosition.id, { level, qty: closeQty, exitPrice: price });
+
+  const order = futuresOrdersRepository.insertOrder(MODE, userId, {
+    id, symbol, exchange, action: 'close', leverage: openPosition.leverage, qty: closeQty, price,
+    stopLoss: null, takeProfit: null, status: 'filled', rejectReason: null, idempotencyKey: null,
+    exchangeOrderId: exchangeResponse?.id ?? null, createdAtUtc: new Date().toISOString(),
+    filledAtUtc: new Date().toISOString(), realizedPnl: pnl,
+  });
+
+  logger.info('futures-real-orders', `Real futures partial close (TP${level}) filled for ${symbol}`, { qty: closeQty, price, pnl, positionId: openPosition.id }, MODE);
+  return order;
+}
+
+module.exports = { placeRealFuturesOrder, marginCurrencyFor, placeRealFuturesPartialClose };

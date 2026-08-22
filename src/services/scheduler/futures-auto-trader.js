@@ -5,6 +5,7 @@ const futuresPositionsRepository = require('../../database/repositories/futures-
 const futuresPortfolioService = require('../portfolio/futures-portfolio-service');
 const signalsService = require('../signals');
 const { resolveTrailingPercent } = require('../risk/atr-trailing');
+const { resolveAdaptiveTp } = require('../risk/adaptive-take-profit-resolver');
 const { placeDemoFuturesOrder } = require('../orders/futures-demo-orders');
 const { placeRealFuturesOrder } = require('../orders/futures-real-orders');
 const { resolveRealCredentials } = require('../exchanges/real-credentials-resolver');
@@ -116,7 +117,15 @@ async function processAsset(mode, asset, source, realCredCache) {
         return;
       }
       const trailingPercent = await resolveTrailingPercent(asset, { symbol, exchange, market: 'futures', timeframe: asset.default_timeframe });
-      const orderArgs = { userId, symbol, exchange, action, leverage, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, signalId: signal.id, source, trailingPercent };
+      const adaptiveTp = await resolveAdaptiveTp({
+        asset, symbol, exchange, market: 'futures', timeframe: asset.default_timeframe,
+        side: action === 'open_long' ? 'long' : 'short',
+        entryPrice: signal.entry ?? signal.price, stopLoss: signal.stopLoss,
+      });
+      const orderArgs = {
+        userId, symbol, exchange, action, leverage, stopLoss: signal.stopLoss,
+        takeProfit: adaptiveTp?.fallbackTakeProfit ?? signal.takeProfit, signalId: signal.id, source, trailingPercent, adaptiveTp,
+      };
       if (mode === 'real') orderArgs.unlockConfirmed = true; // no human present per-trade; gated by realAutoTradeGloballyAllowed() + list membership + per-user credentials instead
       const order = await placeOrder(orderArgs);
       logger.info('futures-auto-trader', `AI futures auto-trade ${action} ${order.status} for ${symbol}`, { mode, userId, orderId: order.id, leverage, rejectReason: order.reject_reason }, mode);

@@ -104,6 +104,35 @@ test('a bullish entry decision opens a long demo futures position with the engin
   assert.equal(positions[0].strategy_id, LSR_STRATEGY_ID);
 });
 
+test('an opted-in asset\'s bullish entry is wired through the Adaptive Take-Profit engine (tiered TP prices stored on the position)', async (t) => {
+  futuresAssetsRepository.addAsset('demo', testUserId, { symbol: 'BTC/USDT:USDT', exchange: 'kucoin', leverage: 5, strategyId: LSR_STRATEGY_ID });
+  futuresAssetsRepository.setAutoTrade('demo', testUserId, 'BTC/USDT:USDT', 'kucoin', true);
+  futuresAssetsRepository.setAdaptiveTpEnabled('demo', testUserId, 'BTC/USDT:USDT', 'kucoin', true);
+  mockPrice(t, 60000);
+  t.mock.method(marketDataService, 'getCandles', async () => {
+    const now = Date.now();
+    const candles = [];
+    let price = 55000;
+    for (let i = 0; i < 200; i += 1) {
+      price += 30;
+      candles.push({ tsUtc: now - (200 - i) * 3600_000, open: price - 20, high: price + 800, low: price - 800, close: price, volume: 10 + i });
+    }
+    return candles;
+  });
+  t.mock.method(liveEngine, 'processLiveCycle', async () => ({ direction: 'bullish', stopLoss: 58000, takeProfit: 64000 }));
+
+  await reversalAutoTrader.runCycle();
+
+  const futuresPositionsRepository = require('../../src/database/repositories/futures-positions-repository');
+  const positions = futuresPositionsRepository.listOpenPositions('demo', testUserId);
+  assert.equal(positions.length, 1);
+  assert.equal(positions[0].adaptive_tp_enabled, 1);
+  assert.ok(typeof positions[0].tp1_price === 'number' && positions[0].tp1_price > 60000);
+  assert.ok(positions[0].tp2_price > positions[0].tp1_price);
+  assert.ok(positions[0].tp3_price > positions[0].tp2_price);
+  assert.equal(positions[0].take_profit, positions[0].tp3_price, 'take_profit is the adaptive fallback (TP3), not the engine\'s raw 64000');
+});
+
 test('a bearish entry decision opens a short demo futures position', async (t) => {
   futuresAssetsRepository.addAsset('demo', testUserId, { symbol: 'BTC/USDT:USDT', exchange: 'kucoin', leverage: 5, strategyId: LSR_STRATEGY_ID });
   futuresAssetsRepository.setAutoTrade('demo', testUserId, 'BTC/USDT:USDT', 'kucoin', true);

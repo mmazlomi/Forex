@@ -91,8 +91,34 @@ test('validateTrade rejects stale data beyond maxDataAgeMs', () => {
 });
 
 test('validateTrade rejects when entry equals stop-loss', () => {
+  // entry sits exactly ON the stop-loss boundary, not strictly between stop and take-profit —
+  // caught by the earlier, more general ENTRY_OUTSIDE_RISK_RANGE check (see the tests below);
+  // INVALID_STOP_LOSS remains a defensive fallback for callers that omit takeProfitPrice.
   const result = validateTrade(baseTrade({ stopLossPrice: 100 }));
-  assert.equal(result.reasonCode, 'INVALID_STOP_LOSS');
+  assert.equal(result.reasonCode, 'ENTRY_OUTSIDE_RISK_RANGE');
+});
+
+// Regression for a real production incident: a 4h GRAM/USDT BUY signal computed its stop-loss
+// against the last CLOSED candle's price, but the order actually filled at a fresh, lower live
+// price fetched separately — landing entry BELOW its own stop-loss. Math.abs()-based risk/reward
+// math doesn't care about direction, so this produced a huge (great-looking) R:R ratio and sailed
+// through every other check; the position opened and immediately self-triggered its stop-loss.
+test('validateTrade rejects a BUY where the stop-loss ended up ABOVE entry (stale signal price vs. a moved live fill price)', () => {
+  const result = validateTrade(baseTrade({ entryPrice: 1.42, stopLossPrice: 1.43, takeProfitPrice: 1.57 }));
+  assert.equal(result.reasonCode, 'ENTRY_OUTSIDE_RISK_RANGE');
+  assert.equal(result.accepted, false);
+});
+
+test('validateTrade rejects a SELL/short where the stop-loss ended up BELOW entry (mirror of the BUY case)', () => {
+  // Short: profitable direction is down, so a valid setup has takeProfit < entry < stopLoss.
+  // Here stopLoss(90) is on the WRONG side — below entry(100) instead of above it.
+  const result = validateTrade(baseTrade({ entryPrice: 100, stopLossPrice: 90, takeProfitPrice: 50 }));
+  assert.equal(result.reasonCode, 'ENTRY_OUTSIDE_RISK_RANGE');
+});
+
+test('validateTrade still accepts a normal, correctly-ordered BUY (entry strictly between stop-loss and take-profit)', () => {
+  const result = validateTrade(baseTrade({ entryPrice: 100, stopLossPrice: 80, takeProfitPrice: 140 }));
+  assert.equal(result.accepted, true);
 });
 
 test('validateTrade rejects risk/reward below the configured minimum', () => {

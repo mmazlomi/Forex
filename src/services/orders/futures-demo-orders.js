@@ -15,6 +15,8 @@ const { estimateLiquidationPrice, isStopLossSafeFromLiquidation } = require('./l
 const MODE = 'demo';
 const DUPLICATE_WINDOW_MS = 5000;
 const MAX_DATA_AGE_MS = 5 * 60 * 1000;
+// See demo-orders.js's identical constant/comment — same dust-fraction fallback-to-full-close rule.
+const DUST_QTY_FRACTION = 0.01;
 
 function defaultRiskSettings(userId) {
   return futuresRiskSettingsRepository.ensureDefaults(userId, MODE, {
@@ -65,9 +67,11 @@ function persistRejected({ id, userId, symbol, exchange, action, leverage, stopL
  * since a plain buy/sell is ambiguous once both long and short exist. Never calls any exchange
  * endpoint — purely local simulation against a live public-market reference price, same as spot Demo.
  *
- * Market orders only, full-quantity close only (no partial) — see docs/architecture.md Phase 2.
+ * Market orders only, full-quantity close only — see docs/architecture.md Phase 2. Partial closes
+ * (adaptive-TP tiers) go through the sibling placeDemoFuturesPartialClose below instead, since a
+ * plain action/qty pair here can't express "close this specific tier."
  */
-async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, source = 'manual', strategyId, timeframe, trailingPercent, reason }) {
+async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', action, leverage, stopLoss, takeProfit, qty, idempotencyKey, signalId, source = 'manual', strategyId, timeframe, trailingPercent, reason, adaptiveTp }) {
   const id = uuidv4();
   action = String(action || '').toLowerCase();
 
@@ -158,7 +162,7 @@ async function placeDemoFuturesOrder({ userId, symbol, exchange = 'kucoin', acti
   }
 
   const position = futuresPortfolioService.openPosition(MODE, userId, {
-    symbol, exchange, side, leverage, qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, liquidationPrice, signalId, source, strategyId, timeframe, trailingPercent,
+    symbol, exchange, side, leverage, qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, liquidationPrice, signalId, source, strategyId, timeframe, trailingPercent, adaptiveTp,
   });
 
   const order = futuresOrdersRepository.insertOrder(MODE, userId, {
@@ -191,4 +195,44 @@ function closeDemoFuturesPosition({ id, userId, symbol, exchange, price, idempot
   return order;
 }
 
-module.exports = { placeDemoFuturesOrder };
+/** Futures twin of demo-orders.js#placeDemoPartialClose — see that function's doc comment for the
+ *  full contract. `action` on the persisted order row is still 'close' (partial isn't a distinct
+ *  DB enum value — same as the futures side never having had a "partial" concept before this). */
+async function placeDemoFuturesPartialClose({ userId, symbol, exchange, level, closeQty, reason }) {
+  const id = uuidv4();
+  const openPosition = futuresPositionsRepository.findOpenPositionBySymbol(MODE, userId, symbol);
+  if (!openPosition) {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'NO_OPEN_POSITION_TO_CLOSE', message: `No open Demo futures position for ${symbol} to partially close.` });
+  }
+  if (!openPosition.adaptive_tp_enabled) {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'ADAPTIVE_TP_NOT_ENABLED', message: `Position ${openPosition.id} for ${symbol} is not adaptive-TP enabled.` });
+  }
+  if (openPosition[`tp${level}_filled_at_utc`]) {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'TP_TIER_ALREADY_FILLED', message: `TP${level} for ${symbol} is already filled — refusing a duplicate partial close.` });
+  }
+
+  const snapshot = await marketDataService.getFuturesSnapshot({ symbol, exchange: exchange || openPosition.exchange });
+  if (snapshot.status !== 'ok' || typeof snapshot.price !== 'number') {
+    return persistRejected({ id, userId, symbol, exchange, action: 'close', reasonCode: 'INVALID_PRICE', message: snapshot.error || 'Market price unavailable' });
+  }
+  const price = snapshot.price;
+
+  const dustQty = (openPosition.initial_qty ?? openPosition.qty) * DUST_QTY_FRACTION;
+  if (closeQty >= openPosition.qty || openPosition.qty - closeQty <= dustQty) {
+    return closeDemoFuturesPosition({ id, userId, symbol, exchange, price, reason: reason ?? 'take_profit' });
+  }
+
+  const { pnl } = futuresPortfolioService.partialClosePosition(MODE, userId, openPosition.id, { level, qty: closeQty, exitPrice: price });
+
+  const order = futuresOrdersRepository.insertOrder(MODE, userId, {
+    id, symbol, exchange: openPosition.exchange, action: 'close', leverage: openPosition.leverage,
+    qty: closeQty, price, stopLoss: null, takeProfit: null, status: 'filled', rejectReason: null,
+    idempotencyKey: null, createdAtUtc: new Date().toISOString(), filledAtUtc: new Date().toISOString(),
+    realizedPnl: pnl,
+  });
+
+  logger.info('futures-demo-orders', `Demo futures partial close (TP${level}) filled for ${symbol}`, { qty: closeQty, price, pnl, positionId: openPosition.id }, MODE);
+  return order;
+}
+
+module.exports = { placeDemoFuturesOrder, placeDemoFuturesPartialClose };

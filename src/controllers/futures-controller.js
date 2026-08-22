@@ -271,6 +271,20 @@ async function setTrailingPercent(req, res) {
   sendSuccess(res, asset, message);
 }
 
+// Futures twin of assets-controller.js#setAdaptiveTp — mode-scoped like every other futures
+// watchlist setter (Demo and Real opt in independently).
+async function setAdaptiveTp(req, res) {
+  const { symbol } = req.params;
+  const exchange = req.query.exchange || 'kucoin';
+  const { enabled } = req.body || {};
+  if (typeof enabled !== 'boolean') {
+    return sendError(res, 'VALIDATION_ERROR', 'enabled must be a boolean.');
+  }
+  const asset = futuresAssetsRepository.setAdaptiveTpEnabled(req.tradingMode, req.user.id, symbol, exchange, enabled);
+  if (!asset) return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" was found on your ${req.tradingMode} watchlist.`, 404);
+  sendSuccess(res, asset, `Adaptive Take-Profit ${enabled ? 'enabled' : 'disabled'} for ${symbol}.`);
+}
+
 const STRATEGY_MODES = ['manual', 'auto'];
 
 // Same effect as assets-controller.js's setStrategyMode() — see its comment. Demo and Real opt
@@ -286,6 +300,38 @@ async function setStrategyMode(req, res) {
   const asset = futuresAssetsRepository.setStrategyMode(req.tradingMode, req.user.id, symbol, exchange, mode);
   if (!asset) return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" was found on your ${req.tradingMode} watchlist.`, 404);
   sendSuccess(res, asset, `Strategy mode set to "${mode}" for ${symbol}.`);
+}
+
+const LSR_TIMEFRAME_MODES = ['manual', 'auto'];
+
+// Mirrors assets-controller.js#setLsrTimeframeMode — see its comment. Demo and Real opt into
+// 'auto' mode independently, same as every other per-asset setting on these fully separate
+// watchlists.
+async function setLsrTimeframeMode(req, res) {
+  const { symbol } = req.params;
+  const exchange = req.query.exchange || 'kucoin';
+  const { mode } = req.body || {};
+  if (!LSR_TIMEFRAME_MODES.includes(mode)) {
+    return sendError(res, 'VALIDATION_ERROR', `mode must be one of: ${LSR_TIMEFRAME_MODES.join(', ')}.`);
+  }
+  const asset = futuresAssetsRepository.setLsrTimeframeMode(req.tradingMode, req.user.id, symbol, exchange, mode);
+  if (!asset) return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" was found on your ${req.tradingMode} watchlist.`, 404);
+  sendSuccess(res, asset, `LSR timeframe mode set to "${mode}" for ${symbol}.`);
+}
+
+// Mirrors assets-controller.js#setLsrManualTimeframes — see its comment.
+async function setLsrManualTimeframes(req, res) {
+  const { symbol } = req.params;
+  const exchange = req.query.exchange || 'kucoin';
+  const { htfTimeframe, signalTimeframe, entryTimeframe } = req.body || {};
+  for (const [key, value] of Object.entries({ htfTimeframe, signalTimeframe, entryTimeframe })) {
+    if (value != null && !SUPPORTED_TIMEFRAMES.includes(value)) {
+      return sendError(res, 'VALIDATION_ERROR', `${key} must be one of ${SUPPORTED_TIMEFRAMES.join(', ')}, or null.`);
+    }
+  }
+  const asset = futuresAssetsRepository.setLsrManualTimeframes(req.tradingMode, req.user.id, symbol, exchange, { htfTimeframe, signalTimeframe, entryTimeframe });
+  if (!asset) return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" was found on your ${req.tradingMode} watchlist.`, 404);
+  sendSuccess(res, asset, `LSR timeframe override updated for ${symbol}.`);
 }
 
 function defaultsFor() {
@@ -347,4 +393,5 @@ module.exports = {
   listSymbols, listFuturesExchanges, getPortfolio, getTradeHistory, listOrders, postDemoOrder, postRealOrder,
   listAssets, addAsset, removeAsset, setAutoTrade, setLeverage, setExchange, setStrategy, setTimeframe, setStrategyMode,
   getRiskSettings, putRiskSettings, setTrailingPercent,
+  setLsrTimeframeMode, setLsrManualTimeframes, setAdaptiveTp,
 };

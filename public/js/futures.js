@@ -20,6 +20,7 @@ const Futures = (() => {
   // Private copy, deliberately not shared with dashboard.js's own TIMEFRAME_OPTIONS — see this
   // file's header comment. Matches the backend's SUPPORTED_TIMEFRAMES.
   const TIMEFRAME_OPTIONS = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
+  const LSR_STRATEGY_ID = 'liquidity-sweep-reversal';
   // Fully independent Demo/Real watchlist caches — never merged, never shared.
   const watchlistCache = { demo: [], real: [] };
 
@@ -317,8 +318,56 @@ const Futures = (() => {
     return EXIT_REASON_LABELS[reason] || (reason || '-');
   }
 
-  // Initial SL/TP are the risk levels the position was opened with; Trailed SL is stop_loss as it
-  // stood at close time — identical to Initial SL unless trailing ratcheted it.
+  // Replaces the normal Timeframe <select> for an LSR-tagged asset row — private copy, mirroring
+  // dashboard.js's identical helper (see its comment for the full rationale).
+  function buildLsrTimeframeCell(asset, apiSetMode) {
+    const cell = el('td', { class: 'lsr-timeframe-cell' });
+    const checkbox = el('input', { type: 'checkbox' });
+    checkbox.checked = asset.lsr_timeframe_mode === 'auto';
+    checkbox.title = 'Auto: periodically backtest a set of htf/signal/entry timeframe combinations for this LSR asset and use whichever ranks best, instead of the fixed 4h/15m/5m default.';
+    const summary = el('span', { class: 'lsr-timeframe-summary' });
+
+    function renderSummary() {
+      if (asset.lsr_timeframe_mode === 'auto') {
+        if (asset.lsr_selected_timeframes_json) {
+          try {
+            const tf = JSON.parse(asset.lsr_selected_timeframes_json);
+            const updated = asset.lsr_timeframe_selection_updated_at_utc ? formatTimestamp(asset.lsr_timeframe_selection_updated_at_utc) : 'pending';
+            summary.textContent = `Auto: ${tf.htfTimeframe}/${tf.signalTimeframe}/${tf.entryTimeframe} (${updated})`;
+          } catch {
+            summary.textContent = 'Auto: pending first selection';
+          }
+        } else {
+          summary.textContent = 'Auto: pending first selection';
+        }
+      } else {
+        const htf = asset.lsr_htf_timeframe, sig = asset.lsr_signal_timeframe, ent = asset.lsr_entry_timeframe;
+        summary.textContent = (htf || sig || ent) ? `${htf || '4h'}/${sig || '15m'}/${ent || '5m'}` : 'Default: 4h/15m/5m';
+      }
+    }
+    renderSummary();
+
+    checkbox.addEventListener('change', async () => {
+      const tfMode = checkbox.checked ? 'auto' : 'manual';
+      try {
+        await apiSetMode(tfMode);
+        asset.lsr_timeframe_mode = tfMode;
+        renderSummary();
+        toast(`LSR auto timeframe ${tfMode === 'auto' ? 'enabled' : 'disabled'} for ${asset.symbol}.`, 'success');
+      } catch (err) {
+        checkbox.checked = !checkbox.checked;
+        toast(`Failed to update LSR timeframe mode: ${err.message}`, 'error');
+      }
+    });
+
+    cell.append(checkbox, el('span', {}, ' '), summary);
+    return cell;
+  }
+
+  // Initial SL/Initial Take are the risk levels the position was opened with (take-profit is
+  // static — never trails — so this is always just t.take_profit, named to match Initial SL's
+  // convention); Trailed SL is stop_loss as it stood at close time — identical to Initial SL
+  // unless trailing ratcheted it.
   function renderTradeHistoryTable(body, emptyEl, trades) {
     clear(body);
     trades.forEach((t) => {
@@ -541,7 +590,11 @@ const Futures = (() => {
           }
         });
         const timeframeCell = el('td');
-        timeframeCell.appendChild(timeframeSelect);
+        if (asset.strategy_id === LSR_STRATEGY_ID) {
+          timeframeCell.appendChild(buildLsrTimeframeCell(asset, (tfMode) => Api.setFuturesLsrTimeframeMode(mode, asset.symbol, asset.exchange, tfMode)));
+        } else {
+          timeframeCell.appendChild(timeframeSelect);
+        }
         row.appendChild(timeframeCell);
 
         const leverageInput = el('input', { type: 'number', min: '1', step: '1', value: String(asset.leverage) });
@@ -662,6 +715,22 @@ const Futures = (() => {
         const autoTradeCell = el('td');
         autoTradeCell.appendChild(autoTradeCheckbox);
         row.appendChild(autoTradeCell);
+
+        const adaptiveTpCheckbox = el('input', { type: 'checkbox' });
+        adaptiveTpCheckbox.checked = !!asset.adaptive_tp_enabled;
+        adaptiveTpCheckbox.title = 'Adaptive Take-Profit: staged partial exits (TP1/TP2/TP3) sized by ATR/market structure, with trailing that only starts after TP1 fires — instead of one fixed take-profit. Only affects positions opened after this is enabled.';
+        adaptiveTpCheckbox.addEventListener('change', async () => {
+          try {
+            await Api.setFuturesAdaptiveTp(mode, asset.symbol, asset.exchange, adaptiveTpCheckbox.checked);
+            toast(`Adaptive Take-Profit ${adaptiveTpCheckbox.checked ? 'enabled' : 'disabled'} for ${asset.symbol}.`, 'success');
+          } catch (err) {
+            adaptiveTpCheckbox.checked = !adaptiveTpCheckbox.checked;
+            toast(`Failed to update Adaptive Take-Profit: ${err.message}`, 'error');
+          }
+        });
+        const adaptiveTpCell = el('td');
+        adaptiveTpCell.appendChild(adaptiveTpCheckbox);
+        row.appendChild(adaptiveTpCell);
 
         const tradeBtn = el('button', { type: 'button' }, 'Trade');
         tradeBtn.addEventListener('click', () => tradeWatchlistAsset(asset, mode));

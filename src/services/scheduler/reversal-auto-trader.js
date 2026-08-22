@@ -18,23 +18,52 @@ const futuresAssetsRepository = require('../../database/repositories/futures-ass
 const futuresPositionsRepository = require('../../database/repositories/futures-positions-repository');
 const liveEngine = require('../reversal-strategy/live-engine');
 const { resolveTrailingPercent } = require('../risk/atr-trailing');
+const { resolveAdaptiveTp } = require('../risk/adaptive-take-profit-resolver');
+const marketDataService = require('../market-data/market-data-service');
 const { STRATEGY_ID: LSR_STRATEGY_ID } = require('../backtesting/reversal-backtest-engine');
 const { placeDemoFuturesOrder } = require('../orders/futures-demo-orders');
 const { placeRealFuturesOrder } = require('../orders/futures-real-orders');
 const { resolveRealCredentials } = require('../exchanges/real-credentials-resolver');
 const exchangeClientFactory = require('../exchanges/exchange-client-factory');
-const { DEFAULT_CONFIG: LSR_DEFAULT_CONFIG } = require('../reversal-strategy/config');
+const { mergeConfig: mergeLsrConfig } = require('../reversal-strategy/config');
 const logger = require('../logging/logger');
 const config = require('../../../config/config');
 
 // LSR has no single timeframe (it watches HTF/signal/entry simultaneously — see live-engine.js),
-// so "the timeframe that led to the signal" for the Open Positions display is this composite
-// string rather than one value. Matches whatever live-engine.js is actually configured with
-// (currently always LSR_DEFAULT_CONFIG — see live-engine.js#processLiveCycle's configOverrides).
-const LSR_TIMEFRAME_LABEL = `${LSR_DEFAULT_CONFIG.htfTimeframe}/${LSR_DEFAULT_CONFIG.signalTimeframe}/${LSR_DEFAULT_CONFIG.entryTimeframe}`;
-
+// so "the timeframe that led to the signal" for the Open Positions display is a composite
+// "htf/signal/entry" string rather than one value — see buildLsrTimeframeLabel below, which
+// reflects whatever this asset is ACTUALLY configured with (global default, a manual per-asset
+// override, or lsr-timeframe-selector.js's latest auto-selected pick — see
+// resolveLsrConfigOverrides), not always the fixed global default anymore.
 let intervalHandle = null;
 let isRunning = false;
+
+/** Resolves this asset's htf/signal/entry timeframe overrides for live-engine.js's
+ *  processLiveCycle. 'auto' mode uses lsr-timeframe-selector.js's latest pick
+ *  (lsr_selected_timeframes_json); 'manual' (default) uses this asset's own
+ *  lsr_htf_timeframe/lsr_signal_timeframe/lsr_entry_timeframe override for whichever fields are
+ *  set, falling back to reversal-strategy/config.js's own global DEFAULT_CONFIG for the rest. A
+ *  malformed lsr_selected_timeframes_json (shouldn't happen — only ever written by
+ *  lsr-timeframe-selector.js itself) fails safe to {} (global default) rather than crashing the cycle. */
+function resolveLsrConfigOverrides(asset) {
+  if (asset.lsr_timeframe_mode === 'auto' && asset.lsr_selected_timeframes_json) {
+    try {
+      return JSON.parse(asset.lsr_selected_timeframes_json);
+    } catch {
+      return {};
+    }
+  }
+  const overrides = {};
+  if (asset.lsr_htf_timeframe) overrides.htfTimeframe = asset.lsr_htf_timeframe;
+  if (asset.lsr_signal_timeframe) overrides.signalTimeframe = asset.lsr_signal_timeframe;
+  if (asset.lsr_entry_timeframe) overrides.entryTimeframe = asset.lsr_entry_timeframe;
+  return overrides;
+}
+
+function buildLsrTimeframeLabel(configOverrides) {
+  const merged = mergeLsrConfig(configOverrides);
+  return `${merged.htfTimeframe}/${merged.signalTimeframe}/${merged.entryTimeframe}`;
+}
 
 /** Same server-wide gates as futures-auto-trader.js's identical helper — see its comment. */
 function realAutoTradeGloballyAllowed() {
@@ -66,7 +95,8 @@ async function processAsset(mode, asset, source, realCredCache) {
     }
 
     const openPosition = futuresPositionsRepository.findOpenPositionBySymbol(mode, userId, symbol);
-    const decision = await liveEngine.processLiveCycle({ market: 'futures', mode, userId, symbol, exchange, hasOpenPosition: !!openPosition });
+    const configOverrides = resolveLsrConfigOverrides(asset);
+    const decision = await liveEngine.processLiveCycle({ market: 'futures', mode, userId, symbol, exchange, hasOpenPosition: !!openPosition, configOverrides });
     if (!decision) return;
 
     // Leverage clamped DOWN to the hard cap for real, never up — same rule as futures-auto-trader.js.
@@ -77,7 +107,27 @@ async function processAsset(mode, asset, source, realCredCache) {
     // even though there's no signals-table row to derive it from (LSR never writes one — see
     // futures-portfolio-service.js#openPosition's comment on this explicit-override param).
     const trailingPercent = await resolveTrailingPercent(asset, { symbol, exchange, market: 'futures', timeframe: asset.default_timeframe });
-    const orderArgs = { userId, symbol, exchange, action, leverage, stopLoss: decision.stopLoss, takeProfit: decision.takeProfit, source, strategyId: LSR_STRATEGY_ID, timeframe: LSR_TIMEFRAME_LABEL, trailingPercent };
+
+    // See reversal-spot-auto-trader.js's identical comment: live-engine.js's decision carries no
+    // entry price, so an opted-in asset gets one extra, targeted snapshot fetch here as the
+    // adaptive engine's entry-price anchor; non-opted-in assets never pay this cost.
+    let adaptiveTp;
+    if (asset.adaptive_tp_enabled) {
+      const entrySnapshot = await marketDataService.getFuturesSnapshot({ symbol, exchange });
+      if (entrySnapshot.status === 'ok' && typeof entrySnapshot.price === 'number') {
+        adaptiveTp = await resolveAdaptiveTp({
+          asset, symbol, exchange, market: 'futures', timeframe: asset.default_timeframe,
+          side: decision.direction === 'bullish' ? 'long' : 'short',
+          entryPrice: entrySnapshot.price, stopLoss: decision.stopLoss,
+        });
+      }
+    }
+
+    const orderArgs = {
+      userId, symbol, exchange, action, leverage, stopLoss: decision.stopLoss,
+      takeProfit: adaptiveTp?.fallbackTakeProfit ?? decision.takeProfit,
+      source, strategyId: LSR_STRATEGY_ID, timeframe: buildLsrTimeframeLabel(configOverrides), trailingPercent, adaptiveTp,
+    };
     if (mode === 'real') orderArgs.unlockConfirmed = true; // no human present per-trade — gated by realAutoTradeGloballyAllowed() + list membership + per-user credentials instead
 
     const order = await placeOrder(orderArgs);

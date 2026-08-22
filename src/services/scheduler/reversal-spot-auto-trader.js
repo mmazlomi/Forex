@@ -25,21 +25,43 @@ const assetsRepository = require('../../database/repositories/assets-repository'
 const positionsRepository = require('../../database/repositories/positions-repository');
 const liveEngine = require('../reversal-strategy/live-engine');
 const { resolveTrailingPercent } = require('../risk/atr-trailing');
+const { resolveAdaptiveTp } = require('../risk/adaptive-take-profit-resolver');
+const marketDataService = require('../market-data/market-data-service');
 const { STRATEGY_ID: LSR_STRATEGY_ID } = require('../backtesting/reversal-backtest-engine');
 const { placeDemoOrder } = require('../orders/demo-orders');
 const { placeRealOrder } = require('../orders/real-orders');
 const { resolveRealCredentials } = require('../exchanges/real-credentials-resolver');
-const { DEFAULT_CONFIG: LSR_DEFAULT_CONFIG } = require('../reversal-strategy/config');
+const { mergeConfig: mergeLsrConfig } = require('../reversal-strategy/config');
 const logger = require('../logging/logger');
 const config = require('../../../config/config');
 
 // LSR has no single timeframe (it watches HTF/signal/entry simultaneously — see live-engine.js),
-// so "the timeframe that led to the signal" for the Open Positions display is this composite
-// string rather than one value — see reversal-auto-trader.js's identical constant.
-const LSR_TIMEFRAME_LABEL = `${LSR_DEFAULT_CONFIG.htfTimeframe}/${LSR_DEFAULT_CONFIG.signalTimeframe}/${LSR_DEFAULT_CONFIG.entryTimeframe}`;
-
+// so "the timeframe that led to the signal" for the Open Positions display is a composite
+// "htf/signal/entry" string rather than one value — see resolveLsrConfigOverrides/
+// buildLsrTimeframeLabel below, identical to reversal-auto-trader.js's twin helpers.
 let intervalHandle = null;
 let isRunning = false;
+
+/** See reversal-auto-trader.js's identical helper for the full comment. */
+function resolveLsrConfigOverrides(asset) {
+  if (asset.lsr_timeframe_mode === 'auto' && asset.lsr_selected_timeframes_json) {
+    try {
+      return JSON.parse(asset.lsr_selected_timeframes_json);
+    } catch {
+      return {};
+    }
+  }
+  const overrides = {};
+  if (asset.lsr_htf_timeframe) overrides.htfTimeframe = asset.lsr_htf_timeframe;
+  if (asset.lsr_signal_timeframe) overrides.signalTimeframe = asset.lsr_signal_timeframe;
+  if (asset.lsr_entry_timeframe) overrides.entryTimeframe = asset.lsr_entry_timeframe;
+  return overrides;
+}
+
+function buildLsrTimeframeLabel(configOverrides) {
+  const merged = mergeLsrConfig(configOverrides);
+  return `${merged.htfTimeframe}/${merged.signalTimeframe}/${merged.entryTimeframe}`;
+}
 
 /** Same server-wide gates as reversal-auto-trader.js's identical helper, spot's own flag —
  *  see config.js's enableSpotAutoTrading comment. */
@@ -72,7 +94,8 @@ async function processAsset(mode, asset, realCredCache) {
     }
 
     const openPosition = positionsRepository.findOpenPositionBySymbol(mode, userId, symbol);
-    const decision = await liveEngine.processLiveCycle({ market: 'spot', mode, userId, symbol, exchange, hasOpenPosition: !!openPosition });
+    const configOverrides = resolveLsrConfigOverrides(asset);
+    const decision = await liveEngine.processLiveCycle({ market: 'spot', mode, userId, symbol, exchange, hasOpenPosition: !!openPosition, configOverrides });
     if (!decision) return;
 
     // LONG ONLY — see this file's header comment. A bearish decision is a valid, real signal from
@@ -89,7 +112,28 @@ async function processAsset(mode, asset, realCredCache) {
     // even though there's no signals-table row to derive it from — see
     // futures-portfolio-service.js#openPosition's comment on this explicit-override param.
     const trailingPercent = await resolveTrailingPercent(asset, { symbol, exchange, market: 'spot', timeframe: asset.default_timeframe });
-    const orderArgs = { userId, symbol, exchange, side: 'buy', stopLoss: decision.stopLoss, takeProfit: decision.takeProfit, strategyId: LSR_STRATEGY_ID, timeframe: LSR_TIMEFRAME_LABEL, trailingPercent };
+
+    // live-engine.js's decision has no explicit entry price (it's determined at fill time, same
+    // as every other strategy in this codebase — see placeDemoOrder/placeRealOrder's own fresh
+    // snapshot fetch) — so an opted-in asset gets one extra, targeted snapshot fetch here purely
+    // to give the adaptive engine an entry-price anchor; non-opted-in assets (the common case)
+    // never pay this cost.
+    let adaptiveTp;
+    if (asset.adaptive_tp_enabled) {
+      const entrySnapshot = await marketDataService.getSnapshot({ symbol, exchange });
+      if (entrySnapshot.status === 'ok' && typeof entrySnapshot.price === 'number') {
+        adaptiveTp = await resolveAdaptiveTp({
+          asset, symbol, exchange, market: 'spot', timeframe: asset.default_timeframe, side: 'buy',
+          entryPrice: entrySnapshot.price, stopLoss: decision.stopLoss,
+        });
+      }
+    }
+
+    const orderArgs = {
+      userId, symbol, exchange, side: 'buy', stopLoss: decision.stopLoss,
+      takeProfit: adaptiveTp?.fallbackTakeProfit ?? decision.takeProfit,
+      strategyId: LSR_STRATEGY_ID, timeframe: buildLsrTimeframeLabel(configOverrides), trailingPercent, adaptiveTp,
+    };
     if (mode === 'real') orderArgs.unlockConfirmed = true; // no human present per-trade — gated by realSpotAutoTradeGloballyAllowed() + the asset's own real_auto_trade_enabled + per-user credentials instead
 
     const order = await placeOrder(orderArgs);

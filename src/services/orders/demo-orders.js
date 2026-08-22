@@ -14,6 +14,11 @@ const { validateTrade } = require('../risk/validate-trade');
 const MODE = 'demo';
 const DUPLICATE_WINDOW_MS = 5000;
 const MAX_DATA_AGE_MS = 5 * 60 * 1000;
+// If firing a TP tier would leave less than 1% of the position's original size open, close the
+// whole remainder instead — an unclosably tiny sliver left open forever (below exchange minimum
+// order size on Real, or just noise on Demo) helps nobody. Fraction of initial_qty, not remaining
+// qty, so this stays a fixed bar regardless of how many tiers already fired.
+const DUST_QTY_FRACTION = 0.01;
 
 function defaultRiskSettings(userId) {
   return riskSettingsRepository.ensureDefaults(userId, MODE, {
@@ -59,7 +64,7 @@ const PENDING_ORDER_TYPES = ['limit', 'stop_market', 'stop_limit'];
  * of two), not an oversight — worst case it adds one poll interval (default 30s) of latency to an
  * order that would've filled instantly on a real exchange.
  */
-async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, orderType, limitPrice, triggerPrice, strategyId, timeframe, trailingPercent, reason }) {
+async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, orderType, limitPrice, triggerPrice, strategyId, timeframe, trailingPercent, reason, adaptiveTp }) {
   const id = uuidv4();
   side = side.toLowerCase();
   orderType = (orderType || 'market').toLowerCase();
@@ -155,7 +160,7 @@ async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takePr
     return persistRejected({ id, userId, symbol, side, stopLoss, takeProfit, price, reasonCode: validation.reasonCode, message: validation.message, idempotencyKey, signalId });
   }
 
-  const position = portfolioService.openPosition(MODE, userId, { symbol, exchange, side: 'buy', qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, signalId, strategyId, timeframe, trailingPercent });
+  const position = portfolioService.openPosition(MODE, userId, { symbol, exchange, side: 'buy', qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, signalId, strategyId, timeframe, trailingPercent, adaptiveTp });
 
   const order = ordersRepository.insertOrder(MODE, userId, {
     id,
@@ -203,6 +208,52 @@ function closeDemoPosition({ id, userId, symbol, price, idempotencyKey, signalId
   });
 
   logger.info('demo-orders', `Demo SELL closed position for ${symbol}`, { realizedPnl, positionId: openPosition.id }, MODE);
+  return order;
+}
+
+/**
+ * Sibling to closeDemoPosition: closes only `closeQty` of an adaptive-TP position's remaining
+ * qty for one TP tier (1/2/3), instead of the whole position. Called by
+ * position-risk-watcher.js#checkAdaptiveTpTriggers when live price crosses that tier's target —
+ * never reached via the generic placeDemoOrder dispatch (side/orderType alone can't express
+ * "close this specific tier"). Re-checks the position is still open and this tier still unfilled
+ * (race defense — the caller should already have checked, but a second, authoritative check here
+ * means a duplicate trigger from an overlapping cycle can never double-fire the same tier). Falls
+ * through to a full close when the requested qty would leave a dust-sized remainder.
+ */
+async function placeDemoPartialClose({ userId, symbol, exchange, level, closeQty, reason }) {
+  const id = uuidv4();
+  const openPosition = positionsRepository.findOpenPositionBySymbol(MODE, userId, symbol);
+  if (!openPosition) {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'NO_OPEN_POSITION_TO_CLOSE', message: `No open Demo position for ${symbol} to partially close.` });
+  }
+  if (!openPosition.adaptive_tp_enabled) {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'ADAPTIVE_TP_NOT_ENABLED', message: `Position ${openPosition.id} for ${symbol} is not adaptive-TP enabled.` });
+  }
+  if (openPosition[`tp${level}_filled_at_utc`]) {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'TP_TIER_ALREADY_FILLED', message: `TP${level} for ${symbol} is already filled — refusing a duplicate partial close.` });
+  }
+
+  const snapshot = await marketDataService.getSnapshot({ symbol, exchange: exchange || openPosition.exchange });
+  if (snapshot.status !== 'ok' || typeof snapshot.price !== 'number') {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'INVALID_PRICE', message: snapshot.error || 'Market price unavailable' });
+  }
+  const price = snapshot.price;
+
+  const dustQty = (openPosition.initial_qty ?? openPosition.qty) * DUST_QTY_FRACTION;
+  if (closeQty >= openPosition.qty || openPosition.qty - closeQty <= dustQty) {
+    return closeDemoPosition({ id, userId, symbol, price, reason: reason ?? 'take_profit' });
+  }
+
+  const { pnl } = portfolioService.partialClosePosition(MODE, userId, openPosition.id, { level, qty: closeQty, exitPrice: price });
+
+  const order = ordersRepository.insertOrder(MODE, userId, {
+    id, symbol, side: 'sell', qty: closeQty, price, stopLoss: null, takeProfit: null,
+    status: 'filled', rejectReason: null, idempotencyKey: null, createdAtUtc: new Date().toISOString(),
+    filledAtUtc: new Date().toISOString(), realizedPnl: pnl,
+  });
+
+  logger.info('demo-orders', `Demo partial close (TP${level}) filled for ${symbol}`, { qty: closeQty, price, pnl, positionId: openPosition.id }, MODE);
   return order;
 }
 
@@ -364,4 +415,4 @@ function toRiskSettingsShape(row) {
   };
 }
 
-module.exports = { placeDemoOrder, finalizeDemoBuyFill, finalizeDemoSellFill, cancelDemoOrder };
+module.exports = { placeDemoOrder, finalizeDemoBuyFill, finalizeDemoSellFill, cancelDemoOrder, placeDemoPartialClose };

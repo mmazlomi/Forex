@@ -16,5 +16,8 @@ router.put('/:symbol/timeframe', asyncHandler(controller.setTimeframe));
 router.put('/:symbol/exchange', asyncHandler(controller.setExchange));
 router.put('/:symbol/strategy-mode', asyncHandler(controller.setStrategyMode));
 router.put('/:symbol/trailing', asyncHandler(controller.setTrailingPercent));
+router.put('/:symbol/lsr-timeframe-mode', asyncHandler(controller.setLsrTimeframeMode));
+router.put('/:symbol/lsr-timeframes', asyncHandler(controller.setLsrManualTimeframes));
+router.put('/:symbol/adaptive-tp', asyncHandler(controller.setAdaptiveTp));
 
 module.exports = router;

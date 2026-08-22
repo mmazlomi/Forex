@@ -4,12 +4,25 @@ const positionsRepository = require('../../database/repositories/positions-repos
 const futuresPositionsRepository = require('../../database/repositories/futures-positions-repository');
 const ordersRepository = require('../../database/repositories/orders-repository');
 const marketDataService = require('../market-data/market-data-service');
-const { placeDemoOrder } = require('../orders/demo-orders');
-const { placeRealOrder } = require('../orders/real-orders');
-const { placeDemoFuturesOrder } = require('../orders/futures-demo-orders');
-const { placeRealFuturesOrder } = require('../orders/futures-real-orders');
+const { placeDemoOrder, placeDemoPartialClose } = require('../orders/demo-orders');
+const { placeRealOrder, placeRealPartialClose } = require('../orders/real-orders');
+const { placeDemoFuturesOrder, placeDemoFuturesPartialClose } = require('../orders/futures-demo-orders');
+const { placeRealFuturesOrder, placeRealFuturesPartialClose } = require('../orders/futures-real-orders');
+// Accessed via namespace object below (atrTrailing.resolveAtrTrailingPercent(...)), not
+// destructured — same t.mock.method(moduleObject, 'fn', ...) convention as every other module in
+// this codebase that gets mocked in tests.
+const atrTrailing = require('../risk/atr-trailing');
+const technicalAnalysis = require('../technical-analysis');
+const technicalScorer = require('../signals/technical-scorer');
+const { computeRealizedR } = require('../risk/realized-r');
 const logger = require('../logging/logger');
 const config = require('../../../config/config');
+
+// A live technicalScore (see technical-scorer.js, range [-1,+1]) at or beyond this magnitude,
+// opposing the position's direction, counts as a fired 'reversal_signal' condition — see
+// checkReversalExit below. 0.5 mirrors the same "strong" bar technical-scorer.js's own individual
+// indicator scorers use for a decisive (non-neutral) reading, not an arbitrary new number.
+const REVERSAL_SIGNAL_SCORE_THRESHOLD = 0.5;
 
 // Structural twin of pending-orders-watcher.js/auto-trader.js: same start/stop/runCycle/getStatus
 // shape, same .unref()'d setInterval. Where those watch the `orders` table for pending
@@ -30,7 +43,11 @@ let isRunning = false;
  *  take-profit on price rising to/through it. Returns which one fired, or null. */
 function checkSpotTrigger(position, currentPrice) {
   if (typeof position.stop_loss === 'number' && currentPrice <= position.stop_loss) return 'stop_loss';
-  if (typeof position.take_profit === 'number' && currentPrice >= position.take_profit) return 'take_profit';
+  // An adaptive-TP position's take_profit column holds TP3 (the final tier) purely as a display/
+  // fallback ceiling — checkAdaptiveTpTriggers is what actually closes it, tier by tier, via
+  // handleAdaptiveSpotPosition below. Skipping this check for adaptive positions avoids a
+  // same-price double-fire race between the two mechanisms.
+  if (!position.adaptive_tp_enabled && typeof position.take_profit === 'number' && currentPrice >= position.take_profit) return 'take_profit';
   return null;
 }
 
@@ -44,9 +61,85 @@ function checkFuturesTrigger(position, currentPrice) {
     const stopHit = isLong ? currentPrice <= position.stop_loss : currentPrice >= position.stop_loss;
     if (stopHit) return 'stop_loss';
   }
-  if (typeof position.take_profit === 'number') {
+  // See checkSpotTrigger's identical comment — adaptive positions are closed tier-by-tier by
+  // checkAdaptiveTpTriggers/handleAdaptiveFuturesPosition instead.
+  if (!position.adaptive_tp_enabled && typeof position.take_profit === 'number') {
     const takeHit = isLong ? currentPrice >= position.take_profit : currentPrice <= position.take_profit;
     if (takeHit) return 'take_profit';
+  }
+  return null;
+}
+
+/** Spot's side is always 'buy'; futures' is 'long'/'short' — same normalization convention as
+ *  adaptive-take-profit-engine.js#normalizeSide, duplicated (not imported) since it's a one-line
+ *  pure mapping and this file otherwise has no dependency on that engine module. */
+function normalizeAdaptiveSide(side) {
+  const s = String(side || '').toLowerCase();
+  if (s === 'long' || s === 'buy') return 'long';
+  if (s === 'short' || s === 'sell') return 'short';
+  return null;
+}
+
+/**
+ * Pure: returns every TP tier (1/2/3) whose stored price is crossed by currentPrice AND hasn't
+ * already fired (tpN_filled_at_utc IS NULL), in tier order. Deliberately returns every qualifying
+ * tier in one call rather than just the first — a 30s poll gap can let price gap straight through
+ * two or three tiers between cycles, and all of them must still fire (in order), not just the one
+ * closest to current price.
+ */
+function checkAdaptiveTpTriggers(position, currentPrice) {
+  const side = normalizeAdaptiveSide(position.side);
+  if (!side) return [];
+  const fired = [];
+  for (const level of [1, 2, 3]) {
+    const targetPrice = position[`tp${level}_price`];
+    if (typeof targetPrice !== 'number') continue;
+    if (position[`tp${level}_filled_at_utc`]) continue;
+    const hit = side === 'long' ? currentPrice >= targetPrice : currentPrice <= targetPrice;
+    if (hit) fired.push({ level, price: targetPrice, qtyPercent: position[`tp${level}_qty_percent`] });
+  }
+  return fired;
+}
+
+/**
+ * Pure: checks a position's stored exit_reversal_conditions_json (computeAdaptiveTargets' output
+ * at entry — see adaptive-take-profit-engine.js#buildReversalConditions) against live data.
+ * 'structure_break' fires on price alone (no fresh fetch needed — the level was fixed at entry).
+ * 'reversal_signal' needs `freshIndicators` (a fresh technical-analysis#computeAllIndicators
+ * result, the one part of this check that costs a live candle fetch — see
+ * checkSpotPositions/checkFuturesPositions' callers) to compute a live technicalScore; null/absent
+ * freshIndicators simply skips that condition rather than throwing, consistent with every other
+ * "missing data disables this check, never blocks the position" convention in this file. Returns
+ * the fired condition, or null if nothing fired (including when reversal-exit wasn't enabled for
+ * this position at all — an empty/missing exit_reversal_conditions_json).
+ */
+function checkReversalExit(position, currentPrice, freshIndicators) {
+  if (!position.exit_reversal_conditions_json) return null;
+  let conditions;
+  try {
+    conditions = JSON.parse(position.exit_reversal_conditions_json);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(conditions) || conditions.length === 0) return null;
+
+  const side = normalizeAdaptiveSide(position.side);
+  if (!side) return null;
+
+  for (const condition of conditions) {
+    if (condition.type === 'structure_break' && typeof condition.level === 'number') {
+      const broke = side === 'long' ? currentPrice < condition.level : currentPrice > condition.level;
+      if (broke) return condition;
+    }
+    if (condition.type === 'reversal_signal' && freshIndicators) {
+      const { technicalScore } = technicalScorer.computeTechnicalScore(freshIndicators, currentPrice);
+      if (typeof technicalScore === 'number') {
+        const opposes = side === 'long'
+          ? technicalScore <= -REVERSAL_SIGNAL_SCORE_THRESHOLD
+          : technicalScore >= REVERSAL_SIGNAL_SCORE_THRESHOLD;
+        if (opposes) return { ...condition, technicalScore };
+      }
+    }
   }
   return null;
 }
@@ -95,6 +188,204 @@ function logTriggerResult(mode, market, position, reason, snapshotPrice, order) 
   );
 }
 
+/** Fetches fresh candles + runs every indicator, for checkReversalExit's 'reversal_signal'
+ *  condition — the one adaptive-TP check that needs live technical data, not just live price
+ *  (same per-cycle-fetch cost pattern as atr-trailing.js's own candle fetch). Returns null (never
+ *  throws) on any failure, same fail-open convention as every other live-data lookup in this file
+ *  — a network hiccup disables this one condition for this cycle, it never blocks the position. */
+async function fetchFreshIndicatorsForReversalCheck({ symbol, exchange, market, timeframe }) {
+  try {
+    const candles = await marketDataService.getCandles({ symbol, exchange, timeframe: timeframe || '1h', limit: 100, market });
+    return technicalAnalysis.computeAllIndicators(candles);
+  } catch {
+    return null;
+  }
+}
+
+/** Once TP1 fires, seeds trailing_percent (ATR × the position's own recommended_trailing_multiplier
+ *  — see adaptive-take-profit-engine.js#computeAdaptiveTargets) so the existing
+ *  computeSpotTrailingUpdate/computeFuturesTrailingUpdate machinery starts ratcheting from here on,
+ *  completely unchanged. A no-op if trailing_percent is already set (seeded on an earlier cycle, or
+ *  the asset already had one some other way) — never overwrites an in-progress trail. */
+async function seedAdaptiveTrailing(mode, market, position, currentPrice) {
+  if (position.trailing_percent != null) return null;
+  const multiplier = typeof position.recommended_trailing_multiplier === 'number'
+    ? position.recommended_trailing_multiplier
+    : atrTrailing.ATR_MULTIPLIER;
+  const percent = await atrTrailing.resolveAtrTrailingPercent({
+    symbol: position.symbol, exchange: position.exchange, market, timeframe: position.timeframe, atrMultiplier: multiplier,
+  });
+  if (percent == null) return null;
+  const repo = market === 'futures' ? futuresPositionsRepository : positionsRepository;
+  return repo.seedTrailingPercent(mode, position.user_id, position.id, { trailingPercent: percent, highWaterMark: currentPrice });
+}
+
+// Dedicated 'adaptive-tp' source tag (separate from the generic 'position-risk-watcher' logs
+// already written above for every trigger/trailing event) so partial fills, trailing seeds, and
+// final exits of an adaptive position are independently filterable in the Logs tab — see Stage G
+// of the adaptive-take-profit build-out. adaptive-take-profit-resolver.js writes the matching
+// "entry" log at position-open time.
+
+function logAdaptivePartialFill(mode, market, position, tier, order) {
+  logger.info(
+    'adaptive-tp',
+    `TP${tier.level} partial fill for ${position.symbol} (${market} ${mode}): closed ${order.qty} at ${order.price}, leg P&L ${order.realized_pnl}`,
+    { positionId: position.id, userId: position.user_id, orderId: order.id, level: tier.level, qty: order.qty, price: order.price, legPnl: order.realized_pnl },
+    mode
+  );
+}
+
+function logAdaptiveFinalExit(mode, market, position, order, reasonLabel) {
+  const realizedR = computeRealizedR(order.realized_pnl, position.r_multiple, position.initial_qty);
+  logger.info(
+    'adaptive-tp',
+    `Final exit (${reasonLabel}) for ${position.symbol} (${market} ${mode}): total realized P&L ${order.realized_pnl}${realizedR != null ? ` (${realizedR.toFixed(2)}R)` : ''}`,
+    { positionId: position.id, userId: position.user_id, orderId: order.id, realizedPnl: order.realized_pnl, realizedR },
+    mode
+  );
+}
+
+function logAdaptiveTrailingSeed(mode, market, position, seeded) {
+  logger.info(
+    'adaptive-tp',
+    `Trailing seeded for ${position.symbol} (${market} ${mode}) after TP1: ${seeded.trailing_percent.toFixed(2)}% distance from high-water-mark ${seeded.trailing_high_water_mark}`,
+    { positionId: position.id, userId: position.user_id, trailingPercent: seeded.trailing_percent, highWaterMark: seeded.trailing_high_water_mark },
+    mode
+  );
+}
+
+/**
+ * Adaptive-TP orchestration for one spot position, called before the classic trailing/trigger
+ * checks below. Fires every TP tier the price has crossed (in order — see checkAdaptiveTpTriggers),
+ * then checks for a reversal exit, then seeds trailing once TP1 has fired. Mutates `position` in
+ * place with the latest DB row after every step, so the caller's subsequent (unchanged) trailing/
+ * stop-loss logic always sees current data. Returns true if the position is now fully closed (the
+ * caller should stop processing it this cycle), false if it's still open.
+ */
+async function handleAdaptiveSpotPosition(mode, position, currentPrice) {
+  const placePartialClose = mode === 'real' ? placeRealPartialClose : placeDemoPartialClose;
+
+  for (const tier of checkAdaptiveTpTriggers(position, currentPrice)) {
+    const initialQty = position.initial_qty ?? position.qty;
+    const closeQty = initialQty * ((tier.qtyPercent ?? 0) / 100);
+    if (!(closeQty > 0)) continue;
+
+    const args = { userId: position.user_id, symbol: position.symbol, exchange: position.exchange, level: tier.level, closeQty, reason: 'take_profit' };
+    if (mode === 'real') args.unlockConfirmed = true; // no human present per-trade, same convention as position-risk-watcher's existing real closes
+    const order = await placePartialClose(args);
+    logger.info(
+      'position-risk-watcher',
+      `Adaptive TP${tier.level} hit for ${position.symbol} (spot ${mode}) at ${currentPrice} — partial close ${order.status}`,
+      { positionId: position.id, userId: position.user_id, orderId: order.id, rejectReason: order.reject_reason },
+      mode
+    );
+
+    const reloaded = positionsRepository.getPosition(mode, position.user_id, position.id);
+    const stillOpen = !!(reloaded && reloaded.status === 'open');
+    if (reloaded) Object.assign(position, reloaded);
+
+    if (order.status === 'filled') {
+      if (stillOpen) logAdaptivePartialFill(mode, 'spot', position, tier, order);
+      else logAdaptiveFinalExit(mode, 'spot', position, order, `TP${tier.level}`);
+    }
+    if (!stillOpen) return true;
+  }
+
+  if (position.exit_reversal_conditions_json) {
+    const freshIndicators = await fetchFreshIndicatorsForReversalCheck({ symbol: position.symbol, exchange: position.exchange, market: 'spot', timeframe: position.timeframe });
+    const firedCondition = checkReversalExit(position, currentPrice, freshIndicators);
+    if (firedCondition) {
+      const placeOrder = mode === 'real' ? placeRealOrder : placeDemoOrder;
+      const args = { userId: position.user_id, symbol: position.symbol, exchange: position.exchange, side: 'sell', reason: 'reversal' };
+      if (mode === 'real') args.unlockConfirmed = true;
+      const order = await placeOrder(args);
+      logger.info(
+        'position-risk-watcher',
+        `Reversal exit for ${position.symbol} (spot ${mode}) at ${currentPrice}: ${firedCondition.description || firedCondition.type} — close ${order.status}`,
+        { positionId: position.id, userId: position.user_id, orderId: order.id },
+        mode
+      );
+      const reloaded = positionsRepository.getPosition(mode, position.user_id, position.id);
+      if (reloaded) Object.assign(position, reloaded);
+      if (order.status === 'filled') logAdaptiveFinalExit(mode, 'spot', position, order, 'reversal');
+      return true;
+    }
+  }
+
+  if (position.tp1_filled_at_utc && position.trailing_percent == null) {
+    const seeded = await seedAdaptiveTrailing(mode, 'spot', position, currentPrice);
+    if (seeded) {
+      Object.assign(position, seeded);
+      logAdaptiveTrailingSeed(mode, 'spot', position, seeded);
+    }
+  }
+
+  return false;
+}
+
+/** Futures twin of handleAdaptiveSpotPosition — see that function's doc comment for the full
+ *  contract. Differs only in which repository/order-service functions it calls. */
+async function handleAdaptiveFuturesPosition(mode, position, currentPrice) {
+  const placePartialClose = mode === 'real' ? placeRealFuturesPartialClose : placeDemoFuturesPartialClose;
+
+  for (const tier of checkAdaptiveTpTriggers(position, currentPrice)) {
+    const initialQty = position.initial_qty ?? position.qty;
+    const closeQty = initialQty * ((tier.qtyPercent ?? 0) / 100);
+    if (!(closeQty > 0)) continue;
+
+    const args = { userId: position.user_id, symbol: position.symbol, exchange: position.exchange, level: tier.level, closeQty, reason: 'take_profit' };
+    if (mode === 'real') args.unlockConfirmed = true;
+    const order = await placePartialClose(args);
+    logger.info(
+      'position-risk-watcher',
+      `Adaptive TP${tier.level} hit for ${position.symbol} (futures ${mode}) at ${currentPrice} — partial close ${order.status}`,
+      { positionId: position.id, userId: position.user_id, orderId: order.id, rejectReason: order.reject_reason },
+      mode
+    );
+
+    const reloaded = futuresPositionsRepository.getPosition(mode, position.user_id, position.id);
+    const stillOpen = !!(reloaded && reloaded.status === 'open');
+    if (reloaded) Object.assign(position, reloaded);
+
+    if (order.status === 'filled') {
+      if (stillOpen) logAdaptivePartialFill(mode, 'futures', position, tier, order);
+      else logAdaptiveFinalExit(mode, 'futures', position, order, `TP${tier.level}`);
+    }
+    if (!stillOpen) return true;
+  }
+
+  if (position.exit_reversal_conditions_json) {
+    const freshIndicators = await fetchFreshIndicatorsForReversalCheck({ symbol: position.symbol, exchange: position.exchange, market: 'futures', timeframe: position.timeframe });
+    const firedCondition = checkReversalExit(position, currentPrice, freshIndicators);
+    if (firedCondition) {
+      const placeOrder = mode === 'real' ? placeRealFuturesOrder : placeDemoFuturesOrder;
+      const args = { userId: position.user_id, symbol: position.symbol, exchange: position.exchange, action: 'close', source: 'auto', reason: 'reversal' };
+      if (mode === 'real') args.unlockConfirmed = true;
+      const order = await placeOrder(args);
+      logger.info(
+        'position-risk-watcher',
+        `Reversal exit for ${position.symbol} (futures ${mode}) at ${currentPrice}: ${firedCondition.description || firedCondition.type} — close ${order.status}`,
+        { positionId: position.id, userId: position.user_id, orderId: order.id },
+        mode
+      );
+      const reloaded = futuresPositionsRepository.getPosition(mode, position.user_id, position.id);
+      if (reloaded) Object.assign(position, reloaded);
+      if (order.status === 'filled') logAdaptiveFinalExit(mode, 'futures', position, order, 'reversal');
+      return true;
+    }
+  }
+
+  if (position.tp1_filled_at_utc && position.trailing_percent == null) {
+    const seeded = await seedAdaptiveTrailing(mode, 'futures', position, currentPrice);
+    if (seeded) {
+      Object.assign(position, seeded);
+      logAdaptiveTrailingSeed(mode, 'futures', position, seeded);
+    }
+  }
+
+  return false;
+}
+
 /**
  * Spot positions with no `exchange` (pre-migration rows) are skipped — no way to fetch a live
  * price for them, same convention as portfolio-service.js's getOpenPositionsWithUnrealizedPnl.
@@ -115,13 +406,18 @@ async function checkSpotPositions(mode) {
   );
 
   for (const position of positions) {
-    if (typeof position.stop_loss !== 'number' && typeof position.take_profit !== 'number') continue;
+    if (typeof position.stop_loss !== 'number' && typeof position.take_profit !== 'number' && !position.adaptive_tp_enabled) continue;
     if (!position.exchange) continue;
     if (protectedKeys.has(`${position.user_id}:${position.symbol}`)) continue;
 
     try {
       const snapshot = await marketDataService.getSnapshot({ symbol: position.symbol, exchange: position.exchange });
       if (snapshot.status !== 'ok' || typeof snapshot.price !== 'number') continue;
+
+      if (position.adaptive_tp_enabled) {
+        const closed = await handleAdaptiveSpotPosition(mode, position, snapshot.price);
+        if (closed) continue;
+      }
 
       const trailingUpdate = computeSpotTrailingUpdate(position, snapshot.price);
       if (trailingUpdate) {
@@ -159,11 +455,16 @@ async function checkFuturesPositions(mode) {
   if (positions.length === 0) return;
 
   for (const position of positions) {
-    if (typeof position.stop_loss !== 'number' && typeof position.take_profit !== 'number') continue;
+    if (typeof position.stop_loss !== 'number' && typeof position.take_profit !== 'number' && !position.adaptive_tp_enabled) continue;
 
     try {
       const snapshot = await marketDataService.getFuturesSnapshot({ symbol: position.symbol, exchange: position.exchange });
       if (snapshot.status !== 'ok' || typeof snapshot.price !== 'number') continue;
+
+      if (position.adaptive_tp_enabled) {
+        const closed = await handleAdaptiveFuturesPosition(mode, position, snapshot.price);
+        if (closed) continue;
+      }
 
       const trailingUpdate = computeFuturesTrailingUpdate(position, snapshot.price);
       if (trailingUpdate) {
@@ -240,4 +541,5 @@ function getStatus() {
 module.exports = {
   start, stop, runCycle, getStatus, checkSpotTrigger, checkFuturesTrigger,
   computeSpotTrailingUpdate, computeFuturesTrailingUpdate,
+  checkAdaptiveTpTriggers, checkReversalExit,
 };

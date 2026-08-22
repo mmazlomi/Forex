@@ -457,7 +457,11 @@
           }
         });
         const timeframeCell = el('td');
-        timeframeCell.appendChild(timeframeSelect);
+        if (asset.strategy_id === LSR_STRATEGY_ID) {
+          timeframeCell.appendChild(buildLsrTimeframeCell(asset, (mode) => Api.setAssetLsrTimeframeMode(asset.symbol, asset.exchange, mode)));
+        } else {
+          timeframeCell.appendChild(timeframeSelect);
+        }
         row.appendChild(timeframeCell);
 
         const strategyCell = el('td');
@@ -584,6 +588,22 @@
         const realAutoTradeCell = el('td');
         realAutoTradeCell.appendChild(realAutoTradeCheckbox);
         row.appendChild(realAutoTradeCell);
+
+        const adaptiveTpCheckbox = el('input', { type: 'checkbox' });
+        adaptiveTpCheckbox.checked = !!asset.adaptive_tp_enabled;
+        adaptiveTpCheckbox.title = 'Adaptive Take-Profit: staged partial exits (TP1/TP2/TP3) sized by ATR/market structure, with trailing that only starts after TP1 fires — instead of one fixed take-profit. Only affects positions opened after this is enabled.';
+        adaptiveTpCheckbox.addEventListener('change', async () => {
+          try {
+            await Api.setAssetAdaptiveTp(asset.symbol, asset.exchange, adaptiveTpCheckbox.checked);
+            toast(`Adaptive Take-Profit ${adaptiveTpCheckbox.checked ? 'enabled' : 'disabled'} for ${asset.symbol}.`, 'success');
+          } catch (err) {
+            adaptiveTpCheckbox.checked = !adaptiveTpCheckbox.checked;
+            toast(`Failed to update Adaptive Take-Profit: ${err.message}`, 'error');
+          }
+        });
+        const adaptiveTpCell = el('td');
+        adaptiveTpCell.appendChild(adaptiveTpCheckbox);
+        row.appendChild(adaptiveTpCell);
 
         const tradeDemoBtn = el('button', { type: 'button' }, 'Trade Demo');
         tradeDemoBtn.addEventListener('click', () => tradeWatchlistAsset(asset, 'demo'));
@@ -860,6 +880,55 @@
     } catch {
       return { label: LSR_NOTICE, tsUtc: null };
     }
+  }
+
+  // Replaces the normal Timeframe <select> for an LSR-tagged asset row — default_timeframe has no
+  // effect on LSR (it watches htf/signal/entry simultaneously, see live-engine.js), so showing that
+  // control here would be silently inert. "Auto" opts this asset into lsr-timeframe-selector.js's
+  // periodic backtest of a handful of candidate htf/signal/entry combos (mirrors the "🎯 Auto-
+  // Select" strategy checkbox elsewhere in this table, but for timeframe instead of strategy).
+  function buildLsrTimeframeCell(asset, apiSetMode) {
+    const cell = el('td', { class: 'lsr-timeframe-cell' });
+    const checkbox = el('input', { type: 'checkbox' });
+    checkbox.checked = asset.lsr_timeframe_mode === 'auto';
+    checkbox.title = 'Auto: periodically backtest a set of htf/signal/entry timeframe combinations for this LSR asset and use whichever ranks best, instead of the fixed 4h/15m/5m default.';
+    const summary = el('span', { class: 'lsr-timeframe-summary' });
+
+    function renderSummary() {
+      if (asset.lsr_timeframe_mode === 'auto') {
+        if (asset.lsr_selected_timeframes_json) {
+          try {
+            const tf = JSON.parse(asset.lsr_selected_timeframes_json);
+            const updated = asset.lsr_timeframe_selection_updated_at_utc ? formatTimestamp(asset.lsr_timeframe_selection_updated_at_utc) : 'pending';
+            summary.textContent = `Auto: ${tf.htfTimeframe}/${tf.signalTimeframe}/${tf.entryTimeframe} (${updated})`;
+          } catch {
+            summary.textContent = 'Auto: pending first selection';
+          }
+        } else {
+          summary.textContent = 'Auto: pending first selection';
+        }
+      } else {
+        const htf = asset.lsr_htf_timeframe, sig = asset.lsr_signal_timeframe, ent = asset.lsr_entry_timeframe;
+        summary.textContent = (htf || sig || ent) ? `${htf || '4h'}/${sig || '15m'}/${ent || '5m'}` : 'Default: 4h/15m/5m';
+      }
+    }
+    renderSummary();
+
+    checkbox.addEventListener('change', async () => {
+      const mode = checkbox.checked ? 'auto' : 'manual';
+      try {
+        await apiSetMode(mode);
+        asset.lsr_timeframe_mode = mode;
+        renderSummary();
+        toast(`LSR auto timeframe ${mode === 'auto' ? 'enabled' : 'disabled'} for ${asset.symbol}.`, 'success');
+      } catch (err) {
+        checkbox.checked = !checkbox.checked;
+        toast(`Failed to update LSR timeframe mode: ${err.message}`, 'error');
+      }
+    });
+
+    cell.append(checkbox, el('span', {}, ' '), summary);
+    return cell;
   }
 
   // Read-only summary shown in the Strategy column in place of the manual <select> once an asset
@@ -1265,9 +1334,11 @@
 
   // Complete round-trip trade history — every CLOSED position, most recent first, with which
   // strategy/timeframe opened it and its realized profit/loss (see portfolio-controller.js#getTradeHistory).
-  // Initial SL/TP are the risk levels the position was opened with; Trailed SL is stop_loss as it
-  // stood at close time — identical to Initial SL unless trailing ratcheted it — see
-  // positions-repository.js's initial_stop_loss comment for why the two are stored separately.
+  // Initial SL/Initial Take are the risk levels the position was opened with (take-profit is
+  // static — never trails — so this is always just t.take_profit, named to match Initial SL's
+  // convention); Trailed SL is stop_loss as it stood at close time — identical to Initial SL
+  // unless trailing ratcheted it — see positions-repository.js's initial_stop_loss comment for why
+  // the two are stored separately.
   function renderTradeHistoryTable(body, emptyEl, trades) {
     clear(body);
     trades.forEach((t) => {
@@ -1292,7 +1363,9 @@
   // ---------- statistics ----------
 
   function fmtWinRate(s) {
-    return s.winRatePercent == null ? '-' : `${fmt(s.winRatePercent, 1)}% (${s.wins}W/${s.losses}L)`;
+    if (s.winRatePercent == null) return '-';
+    const breakevenSuffix = s.breakeven > 0 ? `/${s.breakeven}BE` : '';
+    return `${fmt(s.winRatePercent, 1)}% (${s.wins}W/${s.losses}L${breakevenSuffix})`;
   }
 
   function fmtProfitFactor(pf) {
@@ -1327,6 +1400,7 @@
       pnlCell.className = pnlClassName(s.totalRealizedPnl);
       row.append(
         el('td', {}, label), el('td', {}, String(s.count)), el('td', {}, String(s.wins)), el('td', {}, String(s.losses)),
+        el('td', {}, String(s.breakeven)),
         el('td', {}, s.winRatePercent == null ? '-' : `${fmt(s.winRatePercent, 1)}%`),
         pnlCell,
         el('td', {}, s.avgWin == null ? '-' : fmt(s.avgWin)),
@@ -1347,6 +1421,7 @@
       pnlCell.className = pnlClassName(s.totalRealizedPnl);
       row.append(
         el('td', {}, s.strategyName), el('td', {}, String(s.count)), el('td', {}, String(s.wins)), el('td', {}, String(s.losses)),
+        el('td', {}, String(s.breakeven)),
         el('td', {}, s.winRatePercent == null ? '-' : `${fmt(s.winRatePercent, 1)}%`),
         pnlCell
       );
@@ -1694,9 +1769,25 @@
     try {
       const [portfolio, status] = await Promise.all([Api.getPortfolio(mode), Api.getSystemStatus()]);
 
-      document.getElementById('status-balance').textContent = fmt(portfolio.balance);
+      // Combine with Futures, same as refreshOpenPositionsSummary()'s established pattern below —
+      // previously spot-only, which under-reported balance/P&L whenever futures positions/balance
+      // existed too. Real futures is only queried when unlocked (Api.getFuturesPortfolio('real')
+      // 403s otherwise); if that call fails for any reason, fall back to spot-only rather than
+      // showing nothing.
+      let balance = portfolio.balance;
+      let netPnl = portfolio.pnl ? portfolio.pnl.netPnl : null;
+      if (mode !== 'real' || ModeSwitcher.isRealUnlocked()) {
+        try {
+          const futuresPortfolio = await Api.getFuturesPortfolio(mode);
+          balance += futuresPortfolio.balance;
+          netPnl = (netPnl ?? 0) + (futuresPortfolio.pnl ? futuresPortfolio.pnl.netPnl : 0);
+        } catch {
+          // Futures portfolio unavailable — still show spot-only figures rather than nothing.
+        }
+      }
 
-      const netPnl = portfolio.pnl ? portfolio.pnl.netPnl : null;
+      document.getElementById('status-balance').textContent = fmt(balance);
+
       const netPnlEl = document.getElementById('status-net-pnl');
       netPnlEl.textContent = netPnl === null ? '-' : fmt(netPnl);
       netPnlEl.className = `status-bar__value ${netPnl > 0 ? 'text-positive' : netPnl < 0 ? 'text-negative' : ''}`;

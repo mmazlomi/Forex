@@ -105,6 +105,17 @@ const config = Object.freeze({
   // of closed trades a strategy's backtest must have produced over the lookback window before
   // it's even eligible to be selected.
   strategySelectionMinTrades: parseInteger('STRATEGY_SELECTION_MIN_TRADES', env.STRATEGY_SELECTION_MIN_TRADES, 5),
+
+  // lsr-timeframe-selector.js's structural twin of the strategySelection* group above — picks the
+  // best htfTimeframe/signalTimeframe/entryTimeframe combo per 'auto'-mode LSR asset instead of
+  // the best strategy. Longer lookback and a lower min-trade gate than strategy selection: LSR's
+  // sweep -> divergence -> CHOCH -> retest sequence is a genuinely rare signal (see
+  // docs/reversal-strategy/STRATEGY_SPEC.md), so a 30-day window / 5-trade gate tuned for the
+  // much higher-frequency weighted-indicator strategies would almost never have enough trades to
+  // ever select anything.
+  lsrTimeframeSelectionIntervalMs: parseInteger('LSR_TIMEFRAME_SELECTION_INTERVAL_MS', env.LSR_TIMEFRAME_SELECTION_INTERVAL_MS, 12 * 60 * 60 * 1000),
+  lsrTimeframeSelectionLookbackDays: parseInteger('LSR_TIMEFRAME_SELECTION_LOOKBACK_DAYS', env.LSR_TIMEFRAME_SELECTION_LOOKBACK_DAYS, 90),
+  lsrTimeframeSelectionMinTrades: parseInteger('LSR_TIMEFRAME_SELECTION_MIN_TRADES', env.LSR_TIMEFRAME_SELECTION_MIN_TRADES, 3),
 });
 
 function validateConfig(cfg) {
@@ -162,6 +173,15 @@ function validateConfig(cfg) {
   }
   if (cfg.strategySelectionMinTrades < 1) {
     errors.push(`STRATEGY_SELECTION_MIN_TRADES must be >= 1, got ${cfg.strategySelectionMinTrades}.`);
+  }
+  if (cfg.lsrTimeframeSelectionIntervalMs < 60 * 60 * 1000) {
+    errors.push(`LSR_TIMEFRAME_SELECTION_INTERVAL_MS must be >= 3600000 (1h), got ${cfg.lsrTimeframeSelectionIntervalMs} — this runs a real backtest per candidate per asset and shouldn't be scheduled too tightly.`);
+  }
+  if (cfg.lsrTimeframeSelectionLookbackDays < 1) {
+    errors.push(`LSR_TIMEFRAME_SELECTION_LOOKBACK_DAYS must be >= 1, got ${cfg.lsrTimeframeSelectionLookbackDays}.`);
+  }
+  if (cfg.lsrTimeframeSelectionMinTrades < 1) {
+    errors.push(`LSR_TIMEFRAME_SELECTION_MIN_TRADES must be >= 1, got ${cfg.lsrTimeframeSelectionMinTrades}.`);
   }
   if (cfg.coingeckoMinIntervalMs < 0) {
     errors.push(`COINGECKO_MIN_INTERVAL_MS must be >= 0, got ${cfg.coingeckoMinIntervalMs}.`);

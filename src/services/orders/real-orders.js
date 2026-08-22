@@ -18,6 +18,8 @@ const { validateTrade } = require('../risk/validate-trade');
 const MODE = 'real';
 const DUPLICATE_WINDOW_MS = 5000;
 const MAX_DATA_AGE_MS = 5 * 60 * 1000;
+// See demo-orders.js's identical constant/comment — same dust-fraction fallback-to-full-close rule.
+const DUST_QTY_FRACTION = 0.01;
 
 function defaultRiskSettings(userId) {
   return riskSettingsRepository.ensureDefaults(userId, MODE, {
@@ -104,7 +106,7 @@ function effectivePriceFor(orderType, limitPrice, triggerPrice) {
  * re-read from config on every call rather than cached at boot. There is no fallback path to
  * demo-orders.js: a rejection here is a rejection, never a silent simulated fill.
  */
-async function placeRealOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, orderType, limitPrice, triggerPrice, strategyId, timeframe, trailingPercent, reason }) {
+async function placeRealOrder({ userId, symbol, exchange, side, stopLoss, takeProfit, qty, idempotencyKey, signalId, unlockConfirmed, orderType, limitPrice, triggerPrice, strategyId, timeframe, trailingPercent, reason, adaptiveTp }) {
   const id = uuidv4();
   side = side.toLowerCase();
   orderType = (orderType || 'market').toLowerCase();
@@ -236,7 +238,7 @@ async function placeRealOrder({ userId, symbol, exchange, side, stopLoss, takePr
     responseJson: JSON.stringify(exchangeResponse),
   });
 
-  const position = portfolioService.openPosition(MODE, userId, { symbol, exchange, side: 'buy', qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, signalId, strategyId, timeframe, trailingPercent });
+  const position = portfolioService.openPosition(MODE, userId, { symbol, exchange, side: 'buy', qty: validation.positionSize, entryPrice: price, stopLoss, takeProfit, signalId, strategyId, timeframe, trailingPercent, adaptiveTp });
 
   const order = ordersRepository.insertOrder(MODE, userId, {
     id,
@@ -303,6 +305,84 @@ async function closeRealPosition({ id, userId, symbol, exchange, price, idempote
   });
 
   logger.info('real-orders', `Real SELL closed position for ${symbol}`, { realizedPnl, positionId: openPosition.id }, MODE);
+  return order;
+}
+
+/**
+ * Sibling to closeRealPosition: places a real market sell for only `closeQty` of an adaptive-TP
+ * position (one TP tier), instead of the whole thing. Mirrors placeRealOrder's own gate order for
+ * everything that applies to a real-money exchange mutation (live-trading gate -> credentials ->
+ * unlockConfirmed -> emergency-stop), since this is a new entrypoint that never goes through
+ * placeRealOrder's dispatch. Re-checks the position is open and this tier is still unfilled before
+ * ever reaching the exchange call — the same race defense as demo's twin, but here it also avoids
+ * placing a real order that would just be rejected downstream. Falls through to a full close via
+ * closeRealPosition when the remainder would be dust.
+ */
+async function placeRealPartialClose({ userId, symbol, exchange, level, closeQty, unlockConfirmed, reason }) {
+  const id = uuidv4();
+
+  if (!config.enableLiveTrading) {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'LIVE_TRADING_DISABLED', message: 'ENABLE_LIVE_TRADING is not set to true in .env.' });
+  }
+  const credentials = resolveRealCredentials(userId);
+  if (!credentials.name || !credentials.apiKey || !credentials.apiSecret) {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'MISSING_REAL_CREDENTIALS', message: 'Real exchange credentials are not fully configured.' });
+  }
+  if (!unlockConfirmed) {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'REAL_TRADING_NOT_UNLOCKED', message: 'The UI real-trading unlock/confirmation step was not completed for this request.' });
+  }
+  if (emergencyStopRepository.isActive(MODE, userId)) {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'EMERGENCY_STOP_ACTIVE', message: 'Real trading is halted by an active emergency stop.' });
+  }
+
+  const openPosition = positionsRepository.findOpenPositionBySymbol(MODE, userId, symbol);
+  if (!openPosition) {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'NO_OPEN_POSITION_TO_CLOSE', message: `No open Real position for ${symbol} to partially close.` });
+  }
+  if (!openPosition.adaptive_tp_enabled) {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'ADAPTIVE_TP_NOT_ENABLED', message: `Position ${openPosition.id} for ${symbol} is not adaptive-TP enabled.` });
+  }
+  if (openPosition[`tp${level}_filled_at_utc`]) {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'TP_TIER_ALREADY_FILLED', message: `TP${level} for ${symbol} is already filled — refusing a duplicate partial close.` });
+  }
+
+  const snapshot = await marketDataService.getSnapshot({ symbol, exchange: exchange || openPosition.exchange });
+  if (snapshot.status !== 'ok' || typeof snapshot.price !== 'number') {
+    return persistRejected({ id, userId, symbol, side: 'sell', reasonCode: 'INVALID_PRICE', message: snapshot.error || 'Market price unavailable' });
+  }
+  const price = snapshot.price;
+
+  const dustQty = (openPosition.initial_qty ?? openPosition.qty) * DUST_QTY_FRACTION;
+  if (closeQty >= openPosition.qty || openPosition.qty - closeQty <= dustQty) {
+    return closeRealPosition({ id, userId, symbol, exchange, price, reason: reason ?? 'take_profit' });
+  }
+
+  const client = exchangeClientFactory.getRealExchange(userId);
+  let exchangeResponse;
+  try {
+    exchangeResponse = await client.createOrder(symbol, 'market', 'sell', closeQty);
+  } catch (err) {
+    logger.error('real-orders', `Exchange partial-close order failed for ${symbol}: ${err.message}`, {}, MODE);
+    realAuditLogRepository.insertAuditEntry({ userId, orderId: id, requestJson: JSON.stringify({ symbol, side: 'sell', qty: closeQty, level }), responseJson: JSON.stringify({ error: err.message }) });
+    return persistRejected({ id, userId, symbol, side: 'sell', price, reasonCode: 'EXCHANGE_ORDER_FAILED', message: err.message });
+  }
+
+  realAuditLogRepository.insertAuditEntry({
+    userId, orderId: id,
+    requestJson: JSON.stringify({ symbol, side: 'sell', qty: closeQty, level }),
+    responseJson: JSON.stringify(exchangeResponse),
+  });
+
+  const { pnl } = portfolioService.partialClosePosition(MODE, userId, openPosition.id, { level, qty: closeQty, exitPrice: price });
+
+  const order = ordersRepository.insertOrder(MODE, userId, {
+    id, symbol, side: 'sell', qty: closeQty, price, stopLoss: null, takeProfit: null,
+    status: 'filled', rejectReason: null, idempotencyKey: null,
+    exchangeOrderId: exchangeResponse?.id ?? null, createdAtUtc: new Date().toISOString(),
+    filledAtUtc: new Date().toISOString(), realizedPnl: pnl,
+  });
+
+  logger.info('real-orders', `Real partial close (TP${level}) filled for ${symbol}`, { qty: closeQty, price, pnl, positionId: openPosition.id }, MODE);
   return order;
 }
 
@@ -490,4 +570,4 @@ async function cancelRealOrder(order) {
   return ordersRepository.updateOrderStatus(MODE, userId, order.id, { status: 'cancelled', cancelledAtUtc: new Date().toISOString(), exchangeOrderId: order.exchange_order_id });
 }
 
-module.exports = { placeRealOrder, finalizeRealBuyFill, finalizeRealSellFill, cancelRealOrder };
+module.exports = { placeRealOrder, finalizeRealBuyFill, finalizeRealSellFill, cancelRealOrder, placeRealPartialClose };

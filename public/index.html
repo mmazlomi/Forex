@@ -32,11 +32,11 @@
   <div class="status-bar" id="status-bar">
     <div class="status-bar__item">
       <span class="status-bar__label">Balance</span>
-      <span class="status-bar__value" id="status-balance">-</span>
+      <span class="status-bar__value" id="status-balance" title="Spot + Futures combined, current mode.">-</span>
     </div>
     <div class="status-bar__item">
       <span class="status-bar__label">Net P&amp;L</span>
-      <span class="status-bar__value" id="status-net-pnl">-</span>
+      <span class="status-bar__value" id="status-net-pnl" title="Spot + Futures combined, current mode.">-</span>
     </div>
     <div class="status-bar__item">
       <span class="status-bar__label">Open Positions</span>
@@ -245,7 +245,7 @@
         <h2>Demo Trade History <span class="mode-badge mode-badge--demo">DEMO</span></h2>
         <p class="hint">Every CLOSED (round-trip) position — which strategy/timeframe opened it, entry vs. exit, and realized profit/loss.</p>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Take Profit</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Initial Take</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
             <tbody id="demo-trade-history-body"></tbody></table>
         </div>
         <div id="demo-trade-history-empty" class="empty-state" hidden>No closed trades yet.</div>
@@ -298,7 +298,7 @@
         <h2>Demo Futures Trade History <span class="mode-badge mode-badge--demo">DEMO</span></h2>
         <p class="hint">Every CLOSED (round-trip) position — which strategy/timeframe opened it, entry vs. exit, and realized profit/loss.</p>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Leverage</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Take Profit</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Leverage</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Initial Take</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
             <tbody id="futures-demo-trade-history-body"></tbody></table>
         </div>
         <div id="futures-demo-trade-history-empty" class="empty-state" hidden>No closed trades yet.</div>
@@ -408,7 +408,7 @@
         <h2>Real Trade History <span class="mode-badge mode-badge--real">REAL</span></h2>
         <p class="hint">Every CLOSED (round-trip) position — which strategy/timeframe opened it, entry vs. exit, and realized profit/loss.</p>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Take Profit</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Initial Take</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
             <tbody id="real-trade-history-body"></tbody></table>
         </div>
         <div id="real-trade-history-empty" class="empty-state" hidden>No closed trades yet.</div>
@@ -463,7 +463,7 @@
         <h2>Real Futures Trade History <span class="mode-badge mode-badge--real">REAL</span></h2>
         <p class="hint">Every CLOSED (round-trip) position — which strategy/timeframe opened it, entry vs. exit, and realized profit/loss.</p>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Leverage</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Take Profit</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Opened (Local)</th><th>Closed (Local)</th><th>Symbol</th><th>Side</th><th>Leverage</th><th>Strategy</th><th>Timeframe</th><th>Qty</th><th>Entry</th><th>Initial SL</th><th>Initial Take</th><th>Trailed SL</th><th>Exit</th><th>Exit Reason</th><th>Realized P&amp;L</th></tr></thead>
             <tbody id="futures-real-trade-history-body"></tbody></table>
         </div>
         <div id="futures-real-trade-history-empty" class="empty-state" hidden>No closed trades yet.</div>
@@ -493,7 +493,7 @@
         </div>
         <div class="table-scroll">
           <table class="data-table cmc-table">
-            <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Type</th><th>Timeframe</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade (Demo)</th><th>💰 Real Auto-Trade</th><th></th><th></th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Type</th><th>Timeframe</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade (Demo)</th><th>💰 Real Auto-Trade</th><th>Adaptive TP</th><th></th><th></th><th></th></tr></thead>
             <tbody id="watchlist-spot-body"></tbody>
           </table>
         </div>
@@ -527,7 +527,7 @@
         <button id="futures-demo-enable-all-autotrade-btn" type="button" title="Turns on AI Auto-Trade for every symbol currently in your Demo Futures Signals Setting, in one click.">🤖 Enable Auto-Trade for All</button>
         <div class="table-scroll">
           <table class="data-table cmc-table">
-            <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th></th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th>Adaptive TP</th><th></th><th></th></tr></thead>
             <tbody id="futures-demo-watchlist-body"></tbody>
           </table>
         </div>
@@ -547,7 +547,7 @@
             "enable for all" bulk button here — each symbol is a conscious, one-at-a-time decision.</p>
           <div class="table-scroll">
             <table class="data-table cmc-table">
-              <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th></th><th></th></tr></thead>
+              <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th>Adaptive TP</th><th></th><th></th></tr></thead>
               <tbody id="futures-real-watchlist-body"></tbody>
             </table>
           </div>
@@ -621,14 +621,14 @@
       <div class="card">
         <h2>By Market <span class="mode-badge mode-badge--demo">DEMO</span></h2>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Market</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Realized P&amp;L</th><th>Avg Win</th><th>Avg Loss</th><th>Profit Factor</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Market</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Breakeven</th><th>Win Rate</th><th>Realized P&amp;L</th><th>Avg Win</th><th>Avg Loss</th><th>Profit Factor</th></tr></thead>
             <tbody id="stats-demo-market-body"></tbody></table>
         </div>
       </div>
       <div class="card">
         <h2>By Strategy <span class="mode-badge mode-badge--demo">DEMO</span></h2>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Realized P&amp;L</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Breakeven</th><th>Win Rate</th><th>Realized P&amp;L</th></tr></thead>
             <tbody id="stats-demo-strategy-body"></tbody></table>
         </div>
         <div id="stats-demo-strategy-empty" class="empty-state" hidden>No closed trades yet.</div>
@@ -637,14 +637,14 @@
       <div class="card">
         <h2>By Market <span class="mode-badge mode-badge--real">REAL</span></h2>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Market</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Realized P&amp;L</th><th>Avg Win</th><th>Avg Loss</th><th>Profit Factor</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Market</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Breakeven</th><th>Win Rate</th><th>Realized P&amp;L</th><th>Avg Win</th><th>Avg Loss</th><th>Profit Factor</th></tr></thead>
             <tbody id="stats-real-market-body"></tbody></table>
         </div>
       </div>
       <div class="card">
         <h2>By Strategy <span class="mode-badge mode-badge--real">REAL</span></h2>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Realized P&amp;L</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Breakeven</th><th>Win Rate</th><th>Realized P&amp;L</th></tr></thead>
             <tbody id="stats-real-strategy-body"></tbody></table>
         </div>
         <div id="stats-real-strategy-empty" class="empty-state" hidden>No closed trades yet.</div>

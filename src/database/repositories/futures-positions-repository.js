@@ -27,16 +27,49 @@ function insertPosition(mode, userId, position) {
   const table = futuresPositionsTable(mode);
   const result = db
     .prepare(
-      `INSERT INTO ${table} (user_id, symbol, exchange, side, leverage, margin_mode, qty, entry_price, liquidation_price, stop_loss, take_profit, opened_at_utc, status, signal_id, strategy_id, combined_strategy_ids_json, combined_votes_json, source, timeframe, trailing_percent, trailing_high_water_mark, initial_stop_loss)
-       VALUES (@userId, @symbol, @exchange, @side, @leverage, @marginMode, @qty, @entryPrice, @liquidationPrice, @stopLoss, @takeProfit, @openedAtUtc, 'open', @signalId, @strategyId, @combinedStrategyIdsJson, @combinedVotesJson, @source, @timeframe, @trailingPercent, @trailingHighWaterMark, @stopLoss)`
+      `INSERT INTO ${table} (user_id, symbol, exchange, side, leverage, margin_mode, qty, entry_price, liquidation_price, stop_loss, take_profit, opened_at_utc, status, signal_id, strategy_id, combined_strategy_ids_json, combined_votes_json, source, timeframe, trailing_percent, trailing_high_water_mark, initial_stop_loss, initial_qty, adaptive_tp_enabled, entry_atr, r_multiple, entry_context_json, tp1_price, tp2_price, tp3_price, tp1_qty_percent, tp2_qty_percent, tp3_qty_percent, recommended_trailing_multiplier, exit_reversal_conditions_json)
+       VALUES (@userId, @symbol, @exchange, @side, @leverage, @marginMode, @qty, @entryPrice, @liquidationPrice, @stopLoss, @takeProfit, @openedAtUtc, 'open', @signalId, @strategyId, @combinedStrategyIdsJson, @combinedVotesJson, @source, @timeframe, @trailingPercent, @trailingHighWaterMark, @stopLoss, @initialQty, @adaptiveTpEnabled, @entryAtr, @rMultiple, @entryContextJson, @tp1Price, @tp2Price, @tp3Price, @tp1QtyPercent, @tp2QtyPercent, @tp3QtyPercent, @recommendedTrailingMultiplier, @exitReversalConditionsJson)`
     )
     .run({
       marginMode: 'isolated', liquidationPrice: null,
       signalId: null, strategyId: null, combinedStrategyIdsJson: null, combinedVotesJson: null, source: 'manual', timeframe: null,
       trailingPercent: null, trailingHighWaterMark: null,
-      ...position, userId,
+      adaptiveTpEnabled: 0, entryAtr: null, rMultiple: null, entryContextJson: null,
+      tp1Price: null, tp2Price: null, tp3Price: null,
+      tp1QtyPercent: null, tp2QtyPercent: null, tp3QtyPercent: null,
+      recommendedTrailingMultiplier: null, exitReversalConditionsJson: null,
+      ...position,
+      userId,
+      initialQty: (position && position.initialQty != null) ? position.initialQty : position.qty,
     });
   return db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(result.lastInsertRowid);
+}
+
+/** Futures twin of positions-repository.js#recordPartialExit — identical shape/semantics, just
+ *  against futuresPositionsTable(mode). See that function's doc comment for the full contract. */
+function recordPartialExit(mode, userId, id, { level, qty, price, pnl, feePercent = null, closedAtUtc } = {}) {
+  if (![1, 2, 3].includes(level)) throw new Error(`Invalid TP level ${level} — must be 1, 2, or 3.`);
+  const db = getDb();
+  const table = futuresPositionsTable(mode);
+  const position = getPosition(mode, userId, id);
+  if (!position) return null;
+
+  const filledAtCol = `tp${level}_filled_at_utc`;
+  const fillPriceCol = `tp${level}_fill_price`;
+  if (position[filledAtCol]) {
+    throw new Error(`TP${level} on position ${id} is already filled — refusing to record a duplicate partial exit.`);
+  }
+
+  const closedAt = closedAtUtc || new Date().toISOString();
+  const priorLegs = position.partial_exits_json ? JSON.parse(position.partial_exits_json) : [];
+  const legs = [...priorLegs, { level, qty, price, feePercent, pnl, closedAtUtc: closedAt }];
+  const remainingQty = position.qty - qty;
+  const newPartialSum = (position.realized_pnl_partial_sum || 0) + pnl;
+
+  db.prepare(
+    `UPDATE ${table} SET qty = ?, realized_pnl_partial_sum = ?, ${filledAtCol} = ?, ${fillPriceCol} = ?, partial_exits_json = ? WHERE id = ? AND user_id = ?`
+  ).run(remainingQty, newPartialSum, closedAt, price, JSON.stringify(legs), id, userId);
+  return getPosition(mode, userId, id);
 }
 
 // Ownership-scoped: WHERE id = ? AND user_id = ? — a mismatched userId returns undefined, same as
@@ -119,6 +152,14 @@ function updateTrailingStop(mode, userId, id, { stopLoss, highWaterMark }) {
   return getPosition(mode, userId, id);
 }
 
+/** Futures twin of positions-repository.js#seedTrailingPercent — see that function's doc comment. */
+function seedTrailingPercent(mode, userId, id, { trailingPercent, highWaterMark }) {
+  const db = getDb();
+  const table = futuresPositionsTable(mode);
+  db.prepare(`UPDATE ${table} SET trailing_percent = ?, trailing_high_water_mark = ? WHERE id = ? AND user_id = ?`).run(trailingPercent, highWaterMark, id, userId);
+  return getPosition(mode, userId, id);
+}
+
 module.exports = {
   listOpenPositions,
   listAllOpenPositions,
@@ -133,4 +174,6 @@ module.exports = {
   listAllClosedPositions,
   updateLiquidationPrice,
   updateTrailingStop,
+  seedTrailingPercent,
+  recordPartialExit,
 };

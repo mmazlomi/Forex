@@ -199,6 +199,60 @@ test('processAsset falls back to the single-strategy generateSignal for an "auto
   assert.equal(combinedMock.mock.callCount(), 0);
 });
 
+test('runCycle wires an opted-in asset\'s BUY through the Adaptive Take-Profit engine, storing tiered TP prices on the position', async (t) => {
+  mockPrice(t, 160);
+  t.mock.method(marketDataService, 'getCandles', async () => {
+    const now = Date.now();
+    const candles = [];
+    let price = 100;
+    for (let i = 0; i < 200; i += 1) {
+      price += 0.3;
+      candles.push({ tsUtc: now - (200 - i) * 3600_000, open: price - 0.2, high: price + 8, low: price - 8, close: price, volume: 10 + i });
+    }
+    return candles;
+  });
+
+  assetsRepository.addAsset(testUserId, { symbol: 'BTC/USDT', exchange: 'kucoin', assetType: 'crypto' });
+  assetsRepository.setAutoTrade(testUserId, 'BTC/USDT', 'kucoin', true);
+  assetsRepository.setAdaptiveTpEnabled(testUserId, 'BTC/USDT', 'kucoin', true);
+
+  t.mock.method(signalsService, 'generateSignal', async () => baseSignal({
+    status: 'BUY', entry: 160, stopLoss: 150, takeProfit: 175,
+  }));
+
+  await autoTrader.runCycle();
+
+  const position = positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT');
+  assert.ok(position);
+  assert.equal(position.adaptive_tp_enabled, 1);
+  assert.ok(typeof position.tp1_price === 'number' && position.tp1_price > 160);
+  assert.ok(position.tp2_price > position.tp1_price);
+  assert.ok(position.tp3_price > position.tp2_price);
+  assert.equal(position.take_profit, position.tp3_price, 'the classic take_profit column is the adaptive fallback ceiling (TP3), not the original fixed 175');
+});
+
+test('runCycle leaves a non-opted-in asset\'s BUY completely unaffected by the adaptive machinery (regression pin)', async (t) => {
+  mockPrice(t, 100);
+  const getCandlesMock = t.mock.method(marketDataService, 'getCandles', async () => { throw new Error('should never be called for a non-adaptive asset'); });
+
+  assetsRepository.addAsset(testUserId, { symbol: 'BTC/USDT', exchange: 'kucoin', assetType: 'crypto' });
+  assetsRepository.setAutoTrade(testUserId, 'BTC/USDT', 'kucoin', true);
+  // adaptive_tp_enabled left at its default (off).
+
+  t.mock.method(signalsService, 'generateSignal', async () => baseSignal({
+    status: 'BUY', entry: 100, stopLoss: 90, takeProfit: 130,
+  }));
+
+  await autoTrader.runCycle();
+
+  const position = positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT');
+  assert.ok(position);
+  assert.equal(position.adaptive_tp_enabled, 0);
+  assert.equal(position.take_profit, 130, 'unchanged: the original fixed take-profit, not an adaptive fallback');
+  assert.equal(position.tp1_price, null);
+  assert.equal(getCandlesMock.mock.calls.length, 0, 'resolveAdaptiveTp must never fetch candles for a non-opted-in asset');
+});
+
 test('processAsset uses the single-strategy generateSignal for an ordinary "manual"-mode asset (default, unchanged behavior)', async (t) => {
   mockPrice(t);
   assetsRepository.addAsset(testUserId, { symbol: 'BTC/USDT', exchange: 'kucoin', assetType: 'crypto' });

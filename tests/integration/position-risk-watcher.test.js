@@ -249,3 +249,155 @@ test('getStatus reports whether the watcher is currently running', () => {
   assert.equal(typeof status.running, 'boolean');
   assert.ok(status.intervalMs >= 5000);
 });
+
+// --- Adaptive Take-Profit: multi-tier partial exits, reversal exit, post-TP1 trailing ---
+
+const portfolioService = require('../../src/services/portfolio/portfolio-service');
+const futuresPortfolioService = require('../../src/services/portfolio/futures-portfolio-service');
+
+function fakeAtrCandles(count = 30, { start = 100, step = 0.5 } = {}) {
+  const now = Date.now();
+  const candles = [];
+  let price = start;
+  for (let i = 0; i < count; i += 1) {
+    price += step;
+    candles.push({ tsUtc: now - (count - i) * 3600_000, open: price - 0.2, high: price + 1, low: price - 1, close: price, volume: 10 + i });
+  }
+  return candles;
+}
+
+test('adaptive spot: a price gap through the poll interval fires every crossed tier in one cycle and fully closes at the last one', async (t) => {
+  mockSpotPrice(t, 100);
+  const position = portfolioService.openPosition('demo', testUserId, {
+    symbol: 'BTC/USDT', exchange: 'kucoin', side: 'buy', qty: 10, entryPrice: 100, stopLoss: 80,
+    adaptiveTp: {
+      tp1Price: 110, tp1QtyPercent: 25, tp2Price: 120, tp2QtyPercent: 35, tp3Price: 130, tp3QtyPercent: 40,
+    },
+  });
+
+  mockSpotPrice(t, 135); // gapped straight past TP1, TP2, and TP3
+  await positionRiskWatcher.runCycle();
+
+  assert.equal(positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT'), undefined, 'fully closed after the last tier');
+  const orders = ordersRepository.listOrders('demo', testUserId, {});
+  const sellOrders = orders.filter((o) => o.side === 'sell' && o.status === 'filled');
+  assert.equal(sellOrders.length, 3, 'one order per fired tier (TP1, TP2, final close covering TP3)');
+  const totalQty = sellOrders.reduce((sum, o) => sum + o.qty, 0);
+  assert.ok(Math.abs(totalQty - 10) < 1e-9, 'every unit of the original position was accounted for');
+
+  const closed = positionsRepository.listAllClosedPositions('demo', testUserId).find((p) => p.id === position.id);
+  assert.ok(closed.realized_pnl > 0);
+});
+
+test('adaptive spot: trailing never ratchets before TP1 fires, even as price moves favorably', async (t) => {
+  mockSpotPrice(t, 100);
+  portfolioService.openPosition('demo', testUserId, {
+    symbol: 'BTC/USDT', exchange: 'kucoin', side: 'buy', qty: 10, entryPrice: 100, stopLoss: 80,
+    adaptiveTp: { tp1Price: 130, tp1QtyPercent: 25, recommendedTrailingMultiplier: 2 },
+  });
+
+  mockSpotPrice(t, 120); // favorable, but still below TP1 (130)
+  await positionRiskWatcher.runCycle();
+
+  const position = positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT');
+  assert.ok(position, 'still open — TP1 never fired');
+  assert.equal(position.trailing_percent, null, 'trailing must stay dormant until TP1 fires');
+  assert.equal(position.stop_loss, 80, 'stop-loss untouched');
+});
+
+test('adaptive spot: trailing seeds from recommended_trailing_multiplier the moment TP1 fires, then ratchets normally afterward', async (t) => {
+  t.mock.method(marketDataService, 'getCandles', async () => fakeAtrCandles());
+  mockSpotPrice(t, 100);
+  portfolioService.openPosition('demo', testUserId, {
+    symbol: 'BTC/USDT', exchange: 'kucoin', side: 'buy', qty: 10, entryPrice: 100, stopLoss: 80,
+    adaptiveTp: { tp1Price: 110, tp1QtyPercent: 25, tp2Price: 200, tp2QtyPercent: 35, tp3Price: 300, tp3QtyPercent: 40, recommendedTrailingMultiplier: 2 },
+  });
+
+  mockSpotPrice(t, 111); // fires TP1 only
+  await positionRiskWatcher.runCycle();
+
+  let position = positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT');
+  assert.ok(position, 'still open — 75% remains');
+  assert.ok(position.tp1_filled_at_utc);
+  assert.ok(typeof position.trailing_percent === 'number' && position.trailing_percent > 0, 'trailing seeded on the same cycle TP1 fired');
+  assert.equal(position.trailing_high_water_mark, 111);
+
+  mockSpotPrice(t, 150); // rises further — should ratchet the now-active trailing stop
+  await positionRiskWatcher.runCycle();
+  position = positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT');
+  assert.equal(position.trailing_high_water_mark, 150);
+  assert.ok(position.stop_loss > 80, 'trailing stop has ratcheted up above the original stop-loss');
+});
+
+test('adaptive spot: a structure_break reversal condition closes the full remaining position with exit_reason "reversal"', async (t) => {
+  t.mock.method(marketDataService, 'getCandles', async () => fakeAtrCandles());
+  mockSpotPrice(t, 100);
+  const position = portfolioService.openPosition('demo', testUserId, {
+    symbol: 'BTC/USDT', exchange: 'kucoin', side: 'buy', qty: 10, entryPrice: 100, stopLoss: 80,
+    adaptiveTp: {
+      tp1Price: 150, tp1QtyPercent: 25,
+      exitReversalConditionsJson: JSON.stringify([{ type: 'structure_break', description: 'Loss of key support at 95', level: 95 }]),
+    },
+  });
+
+  mockSpotPrice(t, 94); // below TP1 (never fires) but broke the stored support level
+  await positionRiskWatcher.runCycle();
+
+  assert.equal(positionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT'), undefined);
+  const closed = positionsRepository.listAllClosedPositions('demo', testUserId).find((p) => p.id === position.id);
+  assert.equal(closed.exit_reason, 'reversal');
+});
+
+test('adaptive futures: gap through multiple tiers fires each in order and fully closes at the last one', async (t) => {
+  mockFuturesPrice(t, 100);
+  const position = futuresPortfolioService.openPosition('demo', testUserId, {
+    symbol: 'BTC/USDT:USDT', exchange: 'kucoin', side: 'long', leverage: 2, qty: 10, entryPrice: 100, stopLoss: 80,
+    adaptiveTp: { tp1Price: 110, tp1QtyPercent: 50, tp2Price: 120, tp2QtyPercent: 50 },
+  });
+
+  mockFuturesPrice(t, 125); // gapped past both tiers
+  await positionRiskWatcher.runCycle();
+
+  assert.equal(futuresPositionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT:USDT'), undefined);
+  const closed = futuresPositionsRepository.listAllClosedPositions('demo', testUserId).find((p) => p.id === position.id);
+  assert.ok(closed.realized_pnl > 0);
+});
+
+test('adaptive spot: partial fills, trailing seed, and final exit all write a dedicated "adaptive-tp" log entry with realizedR on the final exit', async (t) => {
+  const logger = require('../../src/services/logging/logger');
+  t.mock.method(marketDataService, 'getCandles', async () => fakeAtrCandles());
+  const infoSpy = t.mock.method(logger, 'info');
+
+  mockSpotPrice(t, 100);
+  portfolioService.openPosition('demo', testUserId, {
+    symbol: 'BTC/USDT', exchange: 'kucoin', side: 'buy', qty: 10, entryPrice: 100, stopLoss: 80,
+    adaptiveTp: { tp1Price: 110, tp1QtyPercent: 50, tp2Price: 120, tp2QtyPercent: 50, recommendedTrailingMultiplier: 2, rMultiple: 20 },
+  });
+
+  mockSpotPrice(t, 111); // fires TP1, leaves 50% open -> partial fill + trailing seed
+  await positionRiskWatcher.runCycle();
+
+  const adaptiveLogsAfterTp1 = infoSpy.mock.calls.filter((c) => c.arguments[0] === 'adaptive-tp');
+  assert.ok(adaptiveLogsAfterTp1.some((c) => c.arguments[1].includes('TP1 partial fill')));
+  assert.ok(adaptiveLogsAfterTp1.some((c) => c.arguments[1].includes('Trailing seeded')));
+
+  mockSpotPrice(t, 121); // fires TP2 -> this closes the full remaining 50%, a final exit
+  await positionRiskWatcher.runCycle();
+
+  const finalExitLog = infoSpy.mock.calls.find((c) => c.arguments[0] === 'adaptive-tp' && c.arguments[1].includes('Final exit'));
+  assert.ok(finalExitLog, 'a Final exit adaptive-tp log entry was written');
+  assert.match(finalExitLog.arguments[1], /\dR\)/, 'the final-exit message includes the realized R-multiple');
+  assert.ok(typeof finalExitLog.arguments[2].realizedR === 'number');
+});
+
+test('adaptive futures: non-adaptive positions in the same cycle are completely unaffected (regression pin)', async (t) => {
+  mockFuturesPrice(t, 100);
+  futuresPortfolioService.openPosition('demo', testUserId, {
+    symbol: 'BTC/USDT:USDT', exchange: 'kucoin', side: 'long', leverage: 2, qty: 10, entryPrice: 100, stopLoss: 90, takeProfit: 140,
+  });
+  mockFuturesPrice(t, 130); // between stop and take-profit, nothing should happen
+  await positionRiskWatcher.runCycle();
+  const position = futuresPositionsRepository.findOpenPositionBySymbol('demo', testUserId, 'BTC/USDT:USDT');
+  assert.ok(position);
+  assert.equal(position.qty, 10, 'never touched by any adaptive-TP code path');
+});

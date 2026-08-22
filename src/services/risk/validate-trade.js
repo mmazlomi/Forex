@@ -65,6 +65,29 @@ function validateTrade({
     return reject('STALE_DATA', `Market data is ${dataAgeMs}ms old, exceeding the ${maxDataAgeMs}ms freshness threshold.`);
   }
 
+  // 3.5. Structural sanity: entryPrice must sit strictly BETWEEN stopLossPrice and
+  // takeProfitPrice, regardless of side — this is true for a long (stopLoss < entry <
+  // takeProfit) and a short (takeProfit < entry < stopLoss) alike, so it needs no explicit
+  // direction param. Every check below this point uses Math.abs() for risk/reward distances
+  // (computeRiskRewardRatio, riskPerUnit), which is direction-blind by design — a stop-loss
+  // that's actually on the WRONG side of entry (e.g. a stale signal price vs. a moved live fill
+  // price handing back stopLoss > entry on a BUY) still produces a small "risk" and can look
+  // like an excellent risk/reward ratio, passing every later check, while the position is
+  // already past its own stop the instant it opens. Real incident this guards against: a 4h
+  // GRAM/USDT BUY signal computed its stop-loss against the last closed candle's price, but by
+  // the time the order actually filled at a fresh live price, price had already fallen through
+  // that stop — the position opened and self-triggered a stop-loss close 8 seconds later.
+  if (typeof entryPrice === 'number' && typeof stopLossPrice === 'number' && typeof takeProfitPrice === 'number') {
+    const lower = Math.min(stopLossPrice, takeProfitPrice);
+    const upper = Math.max(stopLossPrice, takeProfitPrice);
+    if (entryPrice <= lower || entryPrice >= upper) {
+      return reject(
+        'ENTRY_OUTSIDE_RISK_RANGE',
+        `Entry price ${entryPrice} is not between stop-loss ${stopLossPrice} and take-profit ${takeProfitPrice} — the price likely moved between signal generation and fill, invalidating this setup.`
+      );
+    }
+  }
+
   // Position sizing (needed for several subsequent checks). By default this is fully automatic
   // — sized so the trade risks exactly maxRiskAmount if the stop is hit — but a caller may
   // supply qtyOverride to trade a specific amount instead (e.g. to stay under maxOrderValue on a

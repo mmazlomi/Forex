@@ -73,6 +73,11 @@ const Api = (() => {
     // trailingMode: 'fixed' (default, use trailingPercent as-is) or 'atr' (auto-computed from
     // volatility each time a position opens — pass trailingPercent as null in that case).
     setAssetTrailingPercent: (symbol, exchange, trailingPercent, trailingMode = 'fixed') => request('PUT', `api/assets/${encodeURIComponent(symbol)}/trailing`, { query: { exchange }, body: { trailingPercent, trailingMode } }),
+    // 'auto' opts this LSR asset into lsr-timeframe-selector.js's periodic best-timeframe backtest.
+    setAssetLsrTimeframeMode: (symbol, exchange, mode) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/lsr-timeframe-mode`, { query: { exchange }, body: { mode } }),
+    // Opts this asset into the Adaptive Take-Profit engine (staged partial exits + trailing that
+    // starts after TP1 fires) instead of the fixed-formula single take-profit.
+    setAssetAdaptiveTp: (symbol, exchange, enabled) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/adaptive-tp`, { query: { exchange }, body: { enabled } }),
 
     // The lightweight WatchList — separate from the assets/futures-assets Signals Setting lists
     // above. "Promote" is the one-click "Add to Signals Setting" action: it adds the symbol to
@@ -150,6 +155,8 @@ const Api = (() => {
     setFuturesTimeframe: (mode, symbol, exchange, defaultTimeframe) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/timeframe`, { query: { mode, exchange }, body: { defaultTimeframe } }),
     setFuturesStrategyMode: (mode, symbol, exchange, strategyMode) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/strategy-mode`, { query: { mode, exchange }, body: { mode: strategyMode } }),
     setFuturesTrailingPercent: (mode, symbol, exchange, trailingPercent, trailingMode = 'fixed') => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/trailing`, { query: { mode, exchange }, body: { trailingPercent, trailingMode } }),
+    setFuturesLsrTimeframeMode: (mode, symbol, exchange, timeframeMode) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/lsr-timeframe-mode`, { query: { mode, exchange }, body: { mode: timeframeMode } }),
+    setFuturesAdaptiveTp: (mode, symbol, exchange, enabled) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/adaptive-tp`, { query: { mode, exchange }, body: { enabled } }),
 
     getFuturesRiskSettings: (mode) => request('GET', 'api/futures/risk-settings', { query: { mode } }),
     updateFuturesRiskSettings: (mode, body) => request('PUT', 'api/futures/risk-settings', { query: { mode }, body }),

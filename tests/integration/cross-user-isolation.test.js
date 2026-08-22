@@ -48,7 +48,10 @@ test('cross-user order/position/portfolio isolation', async (t) => {
     const pendingRes = await aliceFetch('/api/orders/demo', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        symbol: 'ETH/USDT', exchange: 'kucoin', side: 'buy', stopLoss: 45000, takeProfit: 65000,
+        // stopLoss/takeProfit are relative to the LIMIT price (40000) this order will actually
+        // fill at, not the current 50000 market price — 35000/65000 keeps 40000 strictly between
+        // them, a valid setup (see validate-trade.js's ENTRY_OUTSIDE_RISK_RANGE check).
+        symbol: 'ETH/USDT', exchange: 'kucoin', side: 'buy', stopLoss: 35000, takeProfit: 65000,
         orderType: 'limit', limitPrice: 40000, // far below the mocked 50000 price -> stays pending
       }),
     });

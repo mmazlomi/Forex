@@ -524,6 +524,18 @@ select {
   color: var(--color-fg-muted);
 }
 
+.lsr-timeframe-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.lsr-timeframe-summary {
+  font-size: 0.75rem;
+  color: var(--color-fg-muted);
+}
+
 .disclaimer {
   font-style: italic;
   color: var(--color-fg-muted);

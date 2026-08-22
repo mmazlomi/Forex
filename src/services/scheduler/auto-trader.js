@@ -4,6 +4,7 @@ const assetsRepository = require('../../database/repositories/assets-repository'
 const positionsRepository = require('../../database/repositories/positions-repository');
 const signalsService = require('../signals');
 const { resolveTrailingPercent } = require('../risk/atr-trailing');
+const { resolveAdaptiveTp } = require('../risk/adaptive-take-profit-resolver');
 const { placeDemoOrder } = require('../orders/demo-orders');
 const { STRATEGY_ID: LSR_STRATEGY_ID } = require('../backtesting/reversal-backtest-engine');
 const logger = require('../logging/logger');
@@ -70,9 +71,14 @@ async function processAsset(asset) {
         return;
       }
       const trailingPercent = await resolveTrailingPercent(asset, { symbol, exchange, market: 'spot', timeframe: asset.default_timeframe });
+      const adaptiveTp = await resolveAdaptiveTp({
+        asset, symbol, exchange, market: 'spot', timeframe: asset.default_timeframe, side: 'buy',
+        entryPrice: signal.entry ?? signal.price, stopLoss: signal.stopLoss,
+      });
       const order = await placeDemoOrder({
-        userId, symbol, exchange, side: 'buy', stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, signalId: signal.id,
-        trailingPercent,
+        userId, symbol, exchange, side: 'buy', stopLoss: signal.stopLoss,
+        takeProfit: adaptiveTp?.fallbackTakeProfit ?? signal.takeProfit, signalId: signal.id,
+        trailingPercent, adaptiveTp,
       });
       logger.info('auto-trader', `AI auto-trade BUY ${order.status} for ${symbol}`, { orderId: order.id, rejectReason: order.reject_reason, userId }, MODE);
     } else if (signal.status === 'SELL' && openPosition) {
