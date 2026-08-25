@@ -57,11 +57,27 @@ function skipUnusedCurrencyFetch(client) {
   return client;
 }
 
+function getClientBaseOptions(extra = {}) {
+  const opts = {
+    enableRateLimit: true,
+    timeout: config.requestTimeoutMs,
+    ...extra,
+  };
+  if (config.proxyUrl) {
+    if (config.proxyUrl.startsWith('socks')) {
+      opts.socksProxy = config.proxyUrl;
+    } else {
+      opts.httpsProxy = config.proxyUrl;
+    }
+  }
+  return opts;
+}
+
 /** Market-data / read-only client. No credentials — works for any exchange without an account. */
 function getPublicExchange(exchangeName) {
   return getCachedPublicClient(publicSpotClientCache, exchangeName, () => {
     const ExchangeClass = resolveExchangeClass(exchangeName);
-    return skipUnusedCurrencyFetch(new ExchangeClass({ enableRateLimit: true, timeout: config.requestTimeoutMs, options: SPOT_ONLY_OPTIONS }));
+    return skipUnusedCurrencyFetch(new ExchangeClass(getClientBaseOptions({ options: SPOT_ONLY_OPTIONS })));
   });
 }
 
@@ -71,13 +87,11 @@ function getDemoExchange() {
     throw new Error('DEMO_EXCHANGE_NAME is not configured in .env');
   }
   const ExchangeClass = resolveExchangeClass(config.demoExchange.name);
-  const client = skipUnusedCurrencyFetch(new ExchangeClass({
+  const client = skipUnusedCurrencyFetch(new ExchangeClass(getClientBaseOptions({
     apiKey: config.demoExchange.apiKey,
     secret: config.demoExchange.apiSecret,
-    enableRateLimit: true,
-    timeout: config.requestTimeoutMs,
     options: SPOT_ONLY_OPTIONS,
-  }));
+  })));
   if (typeof client.setSandboxMode === 'function') {
     client.setSandboxMode(true);
   }
@@ -96,13 +110,11 @@ function getRealExchange(userId) {
     throw new Error('No Real Trading exchange is configured (set it from the Real Trading tab, or REAL_EXCHANGE_NAME in .env).');
   }
   const ExchangeClass = resolveExchangeClass(credentials.name);
-  return skipUnusedCurrencyFetch(new ExchangeClass({
+  return skipUnusedCurrencyFetch(new ExchangeClass(getClientBaseOptions({
     apiKey: credentials.apiKey,
     secret: credentials.apiSecret,
-    enableRateLimit: true,
-    timeout: config.requestTimeoutMs,
     options: SPOT_ONLY_OPTIONS,
-  }));
+  })));
 }
 
 // Phase 2 (Futures): a completely separate resolver path from the spot functions above — none of
@@ -172,7 +184,7 @@ function instantiateFuturesExchange(exchangeName, credentialOptions = {}) {
   // unified class hits the same unrelated "assets/all-deposit-withdraw-config" prerequisite during
   // loadMarkets() on its futures/swap path too, so without this every futures snapshot/candle call
   // fails the moment that one unused sub-call does, even though tickers/positions are healthy.
-  return skipUnusedCurrencyFetch(new ExchangeClass({ enableRateLimit: true, timeout: config.requestTimeoutMs, ...credentialOptions, ...instantiateOptions }));
+  return skipUnusedCurrencyFetch(new ExchangeClass(getClientBaseOptions({ ...credentialOptions, ...instantiateOptions })));
 }
 
 /** Market-data / read-only futures client. No credentials. */

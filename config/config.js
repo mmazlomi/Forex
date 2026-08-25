@@ -61,6 +61,7 @@ const config = Object.freeze({
   logLevel: env.LOG_LEVEL || 'info',
   requestTimeoutMs: parseInteger('REQUEST_TIMEOUT_MS', env.REQUEST_TIMEOUT_MS, 10000),
   maxApiRetries: parseInteger('MAX_API_RETRIES', env.MAX_API_RETRIES, 3),
+  proxyUrl: env.HTTPS_PROXY || env.HTTP_PROXY || env.ALL_PROXY || env.PROXY_URL || '',
 
   // Addition beyond the original .env.example spec, for the AI auto-trading feature —
   // see docs/architecture.md. Auto-trading only ever runs in Demo mode.
