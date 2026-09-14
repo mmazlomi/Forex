@@ -36,8 +36,11 @@ router.put('/assets/:symbol/trailing', requireValidMode, asyncHandler(controller
 router.put('/assets/:symbol/lsr-timeframe-mode', requireValidMode, asyncHandler(controller.setLsrTimeframeMode));
 router.put('/assets/:symbol/lsr-timeframes', requireValidMode, asyncHandler(controller.setLsrManualTimeframes));
 router.put('/assets/:symbol/adaptive-tp', requireValidMode, asyncHandler(controller.setAdaptiveTp));
+router.put('/assets/:symbol/autopilot', requireValidMode, asyncHandler(controller.setAutopilot));
+router.put('/assets/:symbol/timeframe-mode', requireValidMode, asyncHandler(controller.setTimeframeMode));
 
 router.get('/risk-settings', requireValidMode, asyncHandler(controller.getRiskSettings));
+
 router.put('/risk-settings', requireValidMode, asyncHandler(controller.putRiskSettings));
 
 module.exports = router;

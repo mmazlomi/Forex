@@ -46,10 +46,20 @@ function validateTrade({
   qtyOverride,
   leverage = 1,
   marginUsed = currentExposureValue,
+  isCooldownActive = false,
+  cooldownRemainingMinutes = 0,
 }) {
   // 1. Emergency stop
   if (emergencyStopActive) {
     return reject('EMERGENCY_STOP_ACTIVE', 'Trading is halted by an active emergency stop.');
+  }
+
+  // 1.5. Protection / Cooldown guard (Freqtrade-style StoplossGuard)
+  if (isCooldownActive) {
+    return reject(
+      'PROTECTION_COOLDOWN_ACTIVE',
+      `Trading is temporarily halted for this symbol by protection cooldown (${cooldownRemainingMinutes || 0}m remaining).`
+    );
   }
 
   // 2. Live trading gate (real mode only)

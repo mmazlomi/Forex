@@ -166,12 +166,43 @@ function deriveVolatilityRegime(atrPercent, config) {
 /** Structural early-exit conditions this setup would invalidate on — descriptive only, matching
  *  the module doc comment: nothing here evaluates live data or closes a position. Stage E
  *  (position-risk-watcher.js) is what checks these against fresh candles/indicators. */
-function buildReversalConditions(side, marketStructure, config) {
+function buildReversalConditions(side, marketStructure, config, entryPrice, atr) {
   if (!config.reversalExitEnabled) return [];
   const conditions = [
     { type: 'reversal_signal', description: `Strong ${side === 'long' ? 'bearish' : 'bullish'} reversal signal against the position.` },
   ];
-  const structureLevel = side === 'long' ? marketStructure?.value?.nearestSupport : marketStructure?.value?.nearestResistance;
+  let structureLevel = side === 'long' ? marketStructure?.value?.nearestSupport : marketStructure?.value?.nearestResistance;
+
+  // Calculate minimum noise buffer distance from entry price:
+  // Must be at least 0.5 * ATR (or 0.3% of entry price if ATR is not available) to prevent
+  // instant premature exits on normal bid/ask spread and sub-minute candle noise.
+  let minBuffer = 0;
+  if (typeof entryPrice === 'number' && entryPrice > 0) {
+    if (typeof atr === 'number' && atr > 0) {
+      minBuffer = Math.max(atr * 0.5, entryPrice * 0.003);
+    } else {
+      minBuffer = entryPrice * 0.003;
+    }
+  }
+
+  // A structural break level MUST make sense relative to the entry price:
+  // - For a LONG, the support level must be BELOW entry price by at least minBuffer (structureLevel <= entryPrice - minBuffer).
+  // - For a SHORT, the resistance level must be ABOVE entry price by at least minBuffer (structureLevel >= entryPrice + minBuffer).
+  // If the initial level was already breached or is within the noise buffer, attempt to find a valid
+  // level from supportLevels / resistanceLevels. If none exists, do not attach an invalid structure_break.
+  const isValidLevel = (lvl) => {
+    if (typeof lvl !== 'number' || !Number.isFinite(lvl)) return false;
+    if (typeof entryPrice !== 'number') return true;
+    return side === 'long' ? lvl <= entryPrice - minBuffer : lvl >= entryPrice + minBuffer;
+  };
+
+  if (!isValidLevel(structureLevel)) {
+    const candidates = side === 'long'
+      ? (marketStructure?.value?.supportLevels || []).filter(isValidLevel).sort((a, b) => b - a)
+      : (marketStructure?.value?.resistanceLevels || []).filter(isValidLevel).sort((a, b) => a - b);
+    structureLevel = candidates[0] ?? null;
+  }
+
   if (marketStructure?.status === 'ok' && typeof structureLevel === 'number') {
     conditions.push({
       type: 'structure_break',
@@ -239,7 +270,7 @@ function computeAdaptiveTargets(input) {
       TP1: null, TP2: null, TP3: null,
       partialExitPercentages: { tp1: 0, tp2: 0, tp3: 0 },
       recommendedTrailingMultiplier: config.trailingAtrMultiplier,
-      exitReversalConditions: buildReversalConditions(side, input.marketStructure, config),
+      exitReversalConditions: buildReversalConditions(side, input.marketStructure, config, entryPrice, input.atr),
       confidence: 0, reason, warnings,
     };
   }
@@ -293,7 +324,7 @@ function computeAdaptiveTargets(input) {
     TP3: finalTargets.TP3,
     partialExitPercentages: { tp1: config.tp1ClosePercent, tp2: config.tp2ClosePercent, tp3: config.tp3RemainingPercent },
     recommendedTrailingMultiplier,
-    exitReversalConditions: buildReversalConditions(side, input.marketStructure, config),
+    exitReversalConditions: buildReversalConditions(side, input.marketStructure, config, entryPrice, input.atr),
     confidence,
     reason,
     warnings,

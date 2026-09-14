@@ -78,6 +78,8 @@ const Api = (() => {
     // Opts this asset into the Adaptive Take-Profit engine (staged partial exits + trailing that
     // starts after TP1 fires) instead of the fixed-formula single take-profit.
     setAssetAdaptiveTp: (symbol, exchange, enabled) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/adaptive-tp`, { query: { exchange }, body: { enabled } }),
+    setAssetAutopilot: (symbol, exchange, enabled) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/autopilot`, { query: { exchange }, body: { enabled } }),
+    setAssetTimeframeMode: (symbol, exchange, mode) => request('PUT', `api/assets/${encodeURIComponent(symbol)}/timeframe-mode`, { query: { exchange }, body: { mode } }),
 
     // The lightweight WatchList — separate from the assets/futures-assets Signals Setting lists
     // above. "Promote" is the one-click "Add to Signals Setting" action: it adds the symbol to
@@ -119,7 +121,12 @@ const Api = (() => {
     clearRealCredentials: () => request('DELETE', 'api/real-exchange-credentials'),
 
     runBacktest: (body) => request('POST', 'api/backtest', { body }),
+    listBacktests: (limit = 10) => request('GET', 'api/backtest', { query: { limit } }),
+    getBacktest: (runId) => request('GET', `api/backtest/${encodeURIComponent(runId)}`),
     runOptimizer: (body) => request('POST', 'api/backtest/optimize', { body }),
+    getAutoPilotMatrix: () => request('GET', 'api/backtest/autopilot/matrix'),
+    evaluateAutoPilotAll: () => request('POST', 'api/backtest/autopilot/evaluate'),
+    evaluateAutoPilotAsset: (body) => request('POST', 'api/backtest/autopilot/evaluate-asset', { body }),
 
     getRiskSettings: (mode) => request('GET', 'api/risk-settings', { query: { mode } }),
     updateRiskSettings: (mode, body) => request('PUT', 'api/risk-settings', { query: { mode }, body }),
@@ -157,8 +164,15 @@ const Api = (() => {
     setFuturesTrailingPercent: (mode, symbol, exchange, trailingPercent, trailingMode = 'fixed') => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/trailing`, { query: { mode, exchange }, body: { trailingPercent, trailingMode } }),
     setFuturesLsrTimeframeMode: (mode, symbol, exchange, timeframeMode) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/lsr-timeframe-mode`, { query: { mode, exchange }, body: { mode: timeframeMode } }),
     setFuturesAdaptiveTp: (mode, symbol, exchange, enabled) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/adaptive-tp`, { query: { mode, exchange }, body: { enabled } }),
+    setFuturesAutopilot: (mode, symbol, exchange, enabled) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/autopilot`, { query: { mode, exchange }, body: { enabled } }),
+    setFuturesTimeframeMode: (mode, symbol, exchange, tfMode) => request('PUT', `api/futures/assets/${encodeURIComponent(symbol)}/timeframe-mode`, { query: { mode, exchange }, body: { mode: tfMode } }),
 
     getFuturesRiskSettings: (mode) => request('GET', 'api/futures/risk-settings', { query: { mode } }),
     updateFuturesRiskSettings: (mode, body) => request('PUT', 'api/futures/risk-settings', { query: { mode }, body }),
+
+    // Macro sentiment & Notifications
+    getFearAndGreed: () => request('GET', 'api/fear-and-greed'),
+    getTelegramStatus: () => request('GET', 'api/notifications/telegram/status'),
+    sendTelegramTest: (body) => request('POST', 'api/notifications/telegram/test', { body }),
   };
 })();

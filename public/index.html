@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css?v=19" />
+  <link rel="stylesheet" href="css/styles.css?v=20" />
   <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
@@ -65,6 +65,10 @@
     <div class="status-bar__item">
       <span class="status-bar__label">Open Positions</span>
       <span class="status-bar__value" id="status-open-positions">-</span>
+    </div>
+    <div class="status-bar__item" id="status-fng-item" title="Crypto Fear & Greed Index">
+      <span class="status-bar__label">Sentiment</span>
+      <span class="status-bar__value" id="status-fng-value">-</span>
     </div>
     <div class="status-bar__item status-bar__item--stop">
       <span class="status-bar__label">Trading</span>
@@ -514,10 +518,11 @@
         <div class="header-controls">
           <button id="add-watchlist-btn" type="button">+ Add current symbol (from WatchList tab)</button>
           <button id="enable-all-autotrade-btn" type="button" title="Turns on AI Auto-Trade (Demo) for every asset currently in your Spot Signals Setting, in one click.">🤖 Enable Auto-Trade for All</button>
+          <button id="enable-all-autopilot-btn" type="button" class="btn-autopilot" title="Activates AI Full AutoPilot for every asset currently in your Spot Signals Setting: AI Strategy Auto-Select + Live ATR Trailing + Adaptive TP + Auto-Trade in one click.">🚀 Enable AutoPilot for All</button>
         </div>
         <div class="table-scroll">
           <table class="data-table cmc-table">
-            <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Type</th><th>Timeframe</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade (Demo)</th><th>💰 Real Auto-Trade</th><th>Adaptive TP</th><th></th><th></th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Type</th><th>Timeframe</th><th>🚀 AutoPilot</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade (Demo)</th><th>💰 Real Auto-Trade</th><th>Adaptive TP</th><th></th><th></th><th></th></tr></thead>
             <tbody id="watchlist-spot-body"></tbody>
           </table>
         </div>
@@ -548,10 +553,13 @@
       <div class="card">
         <h2>Futures Signals Setting — Demo &amp; AI Auto-Trade</h2>
         <p class="hint">🤖 Demo auto-trade reuses the same signal engine as Spot's, with no real stakes.</p>
-        <button id="futures-demo-enable-all-autotrade-btn" type="button" title="Turns on AI Auto-Trade for every symbol currently in your Demo Futures Signals Setting, in one click.">🤖 Enable Auto-Trade for All</button>
+        <div class="header-controls">
+          <button id="futures-demo-enable-all-autotrade-btn" type="button" title="Turns on AI Auto-Trade for every symbol currently in your Demo Futures Signals Setting, in one click.">🤖 Enable Auto-Trade for All</button>
+          <button id="futures-demo-enable-all-autopilot-btn" type="button" class="btn-autopilot" title="Turns on AI Full AutoPilot for every symbol currently in your Demo Futures Signals Setting in one click: AI Auto-Select + Live ATR Trailing + Adaptive TP + Auto-Trade.">🚀 Enable AutoPilot for All</button>
+        </div>
         <div class="table-scroll">
           <table class="data-table cmc-table">
-            <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th>Adaptive TP</th><th></th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Timeframe</th><th>Leverage</th><th>🚀 AutoPilot</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th>Adaptive TP</th><th></th><th></th></tr></thead>
             <tbody id="futures-demo-watchlist-body"></tbody>
           </table>
         </div>
@@ -571,7 +579,7 @@
             "enable for all" bulk button here — each symbol is a conscious, one-at-a-time decision.</p>
           <div class="table-scroll">
             <table class="data-table cmc-table">
-              <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Timeframe</th><th>Leverage</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th>Adaptive TP</th><th></th><th></th></tr></thead>
+              <thead><tr><th>#</th><th>Symbol</th><th>Price</th><th>24h %</th><th>Exchange</th><th>Timeframe</th><th>Leverage</th><th>🚀 AutoPilot</th><th>Strategy</th><th>Trailing %</th><th>🎯 Auto-Select</th><th>🤖 Auto-Trade</th><th>Adaptive TP</th><th></th><th></th></tr></thead>
               <tbody id="futures-real-watchlist-body"></tbody>
             </table>
           </div>
@@ -583,7 +591,19 @@
     <!-- Backtest tab -->
     <section class="tab-panel" id="tab-backtest">
       <div class="card">
-        <h2>Run Backtest</h2>
+        <div class="header-controls" style="margin-bottom: 0.85rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;">
+          <h2 style="margin: 0; padding: 0; border: none;">Run Backtest</h2>
+          <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+            <div id="backtest-auto-status-badge" class="badge" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.65rem; font-size: 0.75rem; border-color: rgba(56, 189, 248, 0.4);">
+              <span class="status-indicator status-indicator--live" style="width: 8px; height: 8px; background: #10b981; border-radius: 50%; display: inline-block;"></span>
+              <span>15m Auto-Run: <strong id="backtest-auto-state-text" style="color: #10b981;">Active</strong></span>
+              <span>(Next in: <strong id="backtest-countdown-display" style="color: #38bdf8; font-family: var(--font-mono);">15:00</strong>)</span>
+            </div>
+            <button id="backtest-auto-toggle-btn" type="button" style="font-size: 0.78rem; padding: 0.35rem 0.75rem;">⏸️ Pause</button>
+            <button id="backtest-run-now-btn" type="button" class="btn-autopilot" style="font-size: 0.78rem; padding: 0.35rem 0.75rem;">🔄 Run Now</button>
+          </div>
+        </div>
+        <div id="backtest-last-run-info" class="hint" style="margin-bottom: 0.65rem;">Last execution: -</div>
         <form id="backtest-form" class="order-form">
           <label>Strategy <select id="backtest-strategy-select" name="strategyId"></select></label>
           <label>Start date <input name="start" type="date" required /></label>
@@ -594,14 +614,125 @@
           <button type="submit">Run Backtest</button>
         </form>
         <p class="hint" id="backtest-applied-hint"></p>
-        <p class="hint">Uses the current header's exchange/symbol/timeframe. Longer ranges take longer to fetch. Backtests always use technical analysis only (fundamentalWeight is forced to 0 — no look-ahead-free historical fundamentals feed exists).</p>
+        <p class="hint">Uses the current header's exchange/symbol/timeframe. Auto-refreshes every 15 minutes with complete trade history. Backtests always use technical analysis only (fundamentalWeight is forced to 0 — no look-ahead-free historical fundamentals feed exists).</p>
       </div>
       <div class="card" id="backtest-results-card" hidden>
-        <h2>Results</h2>
+        <h2>Results &amp; Performance Summary</h2>
+        <div id="backtest-summary-banner" class="hint" style="font-size: 0.8rem; margin-bottom: 0.75rem; color: #38bdf8;"></div>
         <p class="disclaimer">Past performance does not guarantee future results.</p>
         <dl class="stat-list" id="backtest-metrics"></dl>
         <div id="equity-chart" class="chart-container"></div>
         <div id="backtest-warnings"></div>
+
+        <h3 style="margin-top: 1.5rem; display: flex; align-items: center; justify-content: space-between;">
+          <span>Complete Trade History (<span id="backtest-trades-count">0</span> trades)</span>
+        </h3>
+        <div class="table-scroll" style="max-height: 440px; overflow-y: auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Entered (Local)</th>
+                <th>Exited (Local)</th>
+                <th>Side</th>
+                <th>Qty</th>
+                <th>Entry Price</th>
+                <th>Exit Price</th>
+                <th>P&amp;L ($)</th>
+                <th>P&amp;L %</th>
+                <th>Exit Reason</th>
+              </tr>
+            </thead>
+            <tbody id="backtest-trades-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- AutoPilot Multi-Asset Backtest Matrix card -->
+      <div class="card" id="autopilot-matrix-card">
+        <div class="header-controls" style="margin-bottom: 0.85rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;">
+          <div>
+            <h2 style="margin: 0; padding: 0; border: none; display: flex; align-items: center; gap: 0.5rem;">
+              <span>AutoPilot Multi-Asset Backtest Matrix</span>
+              <span class="badge" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; font-size: 0.72rem;">All Watchlist Symbols</span>
+            </h2>
+            <p class="hint" style="margin: 0.25rem 0 0 0;">
+              Autonomous background backtest evaluations across Spot &amp; Futures assets. Strategies and timeframes are ranked by historical win rate over a 30-day rolling lookback window.
+            </p>
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+            <button id="autopilot-matrix-eval-all-btn" type="button" class="btn-autopilot" style="font-size: 0.8rem; padding: 0.4rem 0.85rem; display: inline-flex; align-items: center; gap: 0.35rem;">
+              <span>⚡ Evaluate All Assets Now</span>
+            </button>
+            <button id="autopilot-matrix-refresh-btn" type="button" style="font-size: 0.8rem; padding: 0.4rem 0.75rem;">
+              🔄 Refresh
+            </button>
+          </div>
+        </div>
+
+        <!-- 4 KPI Summary Cards -->
+        <div class="grid grid--4col" style="margin-bottom: 0.85rem; gap: 0.65rem;">
+          <div class="kpi-card" style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.65rem; text-align: center;">
+            <div class="hint" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;">Total Monitored</div>
+            <div id="autopilot-kpi-total" style="font-size: 1.35rem; font-weight: 700; color: #f8fafc; font-family: var(--font-mono); margin-top: 0.15rem;">0</div>
+          </div>
+          <div class="kpi-card" style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.65rem; text-align: center;">
+            <div class="hint" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;">AutoPilot Active</div>
+            <div id="autopilot-kpi-active" style="font-size: 1.35rem; font-weight: 700; color: #10b981; font-family: var(--font-mono); margin-top: 0.15rem;">0</div>
+          </div>
+          <div class="kpi-card" style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.65rem; text-align: center;">
+            <div class="hint" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;">Evaluated Symbols</div>
+            <div id="autopilot-kpi-evaluated" style="font-size: 1.35rem; font-weight: 700; color: #38bdf8; font-family: var(--font-mono); margin-top: 0.15rem;">0</div>
+          </div>
+          <div class="kpi-card" style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.65rem; text-align: center;">
+            <div class="hint" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;">Avg AutoPilot Win Rate</div>
+            <div id="autopilot-kpi-winrate" style="font-size: 1.35rem; font-weight: 700; color: #a78bfa; font-family: var(--font-mono); margin-top: 0.15rem;">-</div>
+          </div>
+        </div>
+
+        <div id="autopilot-matrix-info-bar" class="hint" style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.85rem; background: rgba(15, 23, 42, 0.5); padding: 0.5rem 0.75rem; border-radius: var(--radius-md); border: 1px solid var(--color-border); font-size: 0.75rem; align-items: center;">
+          <span>📅 Lookback: <strong id="autopilot-config-lookback" style="color: #38bdf8;">30d</strong></span>
+          <span>🎯 Min Trades: <strong id="autopilot-config-min-trades" style="color: #38bdf8;">5</strong></span>
+          <span>🏆 Top Selection: <strong id="autopilot-config-top-count" style="color: #38bdf8;">2-3 Strategies</strong></span>
+          <span>⏱️ Interval: <strong id="autopilot-config-interval" style="color: #38bdf8;">12h</strong></span>
+          <span>📊 Status: <strong id="autopilot-matrix-eval-count" style="color: #10b981;">0 / 0</strong></span>
+        </div>
+
+        <!-- Toolbar: Market filter tabs & Symbol search -->
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.85rem;">
+          <div id="autopilot-matrix-market-filters" style="display: inline-flex; gap: 0.25rem; background: rgba(15, 23, 42, 0.6); padding: 0.2rem; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
+            <button type="button" class="btn-filter btn-filter--active" data-market="all" style="font-size: 0.75rem; padding: 0.3rem 0.65rem; border-radius: 4px;">All (<span id="filter-count-all">0</span>)</button>
+            <button type="button" class="btn-filter" data-market="spot" style="font-size: 0.75rem; padding: 0.3rem 0.65rem; border-radius: 4px;">Spot (<span id="filter-count-spot">0</span>)</button>
+            <button type="button" class="btn-filter" data-market="futures-demo" style="font-size: 0.75rem; padding: 0.3rem 0.65rem; border-radius: 4px;">Futures Demo (<span id="filter-count-demo">0</span>)</button>
+            <button type="button" class="btn-filter" data-market="futures-real" style="font-size: 0.75rem; padding: 0.3rem 0.65rem; border-radius: 4px;">Futures Real (<span id="filter-count-real">0</span>)</button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <input id="autopilot-matrix-search" type="text" placeholder="🔍 Search symbol (e.g. BTC, ETH)..." style="font-size: 0.78rem; padding: 0.35rem 0.75rem; width: 230px; background: rgba(15, 23, 42, 0.7); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: #fff;" />
+          </div>
+        </div>
+
+        <div class="table-scroll" style="max-height: 520px; overflow-y: auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th>Symbol</th>
+                <th>AutoPilot</th>
+                <th>Timeframe</th>
+                <th>Auto-Selected Strategies &amp; Win Rates</th>
+                <th>Avg Win Rate %</th>
+                <th>Net P&amp;L %</th>
+                <th>Trades</th>
+                <th>Status</th>
+                <th>Last Evaluated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="autopilot-matrix-tbody">
+              <tr><td colspan="11" style="text-align: center; color: var(--color-text-dim);">Loading AutoPilot matrix...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div class="card">
@@ -726,6 +857,22 @@
         <button id="refresh-system-btn" type="button">Refresh</button>
         <pre id="system-status-output" class="raw-output"></pre>
       </div>
+      <div class="card" id="telegram-settings-card">
+        <h2>Telegram Notifications</h2>
+        <p class="hint">Receive instant real-time alerts on Telegram whenever an order is placed, a Take-Profit or Stop-Loss triggers, or emergency stop is tripped.</p>
+        <div class="header-controls">
+          <label class="asset-picker" style="flex: 1; min-width: 200px;">
+            Bot Token
+            <input id="telegram-token-input" type="password" placeholder="e.g. 123456789:ABCdefGHIjkl..." autocomplete="off" />
+          </label>
+          <label class="asset-picker" style="flex: 1; min-width: 140px;">
+            Chat ID
+            <input id="telegram-chatid-input" type="text" placeholder="e.g. 987654321" autocomplete="off" />
+          </label>
+          <button id="telegram-test-btn" type="button" class="primary-btn">Send Test Message</button>
+        </div>
+        <p id="telegram-status-text" class="hint" style="margin-top: 0.5rem;"></p>
+      </div>
       <div class="card">
         <h2>Logs</h2>
         <button id="refresh-logs-btn" type="button">Refresh</button>
@@ -761,6 +908,37 @@
     </div>
   </div>
 
+  <!-- AutoPilot Strategy Breakdown Modal -->
+  <div id="autopilot-breakdown-backdrop" class="dialog-backdrop" hidden>
+    <div class="dialog" style="max-width: 780px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem;">
+        <h3 id="autopilot-breakdown-title" style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
+          <span>Strategy Win Rate Breakdown</span>
+        </h3>
+        <button id="autopilot-breakdown-close-btn" type="button" style="background: none; border: none; color: var(--color-text-dim); font-size: 1.25rem; cursor: pointer; padding: 0.2rem 0.5rem;">✕</button>
+      </div>
+      <div id="autopilot-breakdown-meta" class="hint" style="margin-bottom: 0.85rem; font-size: 0.8rem;"></div>
+      <div class="table-scroll" style="max-height: 380px; overflow-y: auto;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Strategy</th>
+              <th>Win Rate %</th>
+              <th>Net P&amp;L %</th>
+              <th>Trades</th>
+              <th>Max DD %</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="autopilot-breakdown-tbody"></tbody>
+        </table>
+      </div>
+      <div class="dialog-actions" style="margin-top: 1rem;">
+        <button id="autopilot-breakdown-done-btn" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="confirm-dialog-backdrop" class="dialog-backdrop" hidden>
     <div class="dialog" role="dialog" aria-modal="true">
       <h2 id="confirm-dialog-title">Confirm Order</h2>
@@ -779,13 +957,13 @@
 
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
-  <script src="js/api.js?v=18"></script>
-  <script src="js/auth.js?v=18"></script>
-  <script src="js/charts.js?v=18"></script>
-  <script src="js/mode-switcher.js?v=18"></script>
-  <script src="js/order-confirmation.js?v=18"></script>
-  <script src="js/futures.js?v=18"></script>
-  <script src="js/dashboard.js?v=18"></script>
-  <script src="js/app.js?v=18"></script>
+  <script src="js/api.js?v=22"></script>
+  <script src="js/auth.js?v=22"></script>
+  <script src="js/charts.js?v=22"></script>
+  <script src="js/mode-switcher.js?v=22"></script>
+  <script src="js/order-confirmation.js?v=22"></script>
+  <script src="js/futures.js?v=22"></script>
+  <script src="js/dashboard.js?v=22"></script>
+  <script src="js/app.js?v=22"></script>
 </body>
 </html>

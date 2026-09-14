@@ -207,3 +207,26 @@ test('checkReversalExit: malformed JSON is treated as no conditions, never throw
   const position = { side: 'buy', exit_reversal_conditions_json: 'not-json' };
   assert.equal(checkReversalExit(position, 100, null), null);
 });
+
+test('checkReversalExit (regression): ignores structure_break if the level was already breached at entry', () => {
+  // Short position entered at 2485.91, but condition level was 2483.6 (< entry)
+  const position = {
+    side: 'short',
+    entry_price: 2485.91,
+    exit_reversal_conditions_json: JSON.stringify([{ type: 'structure_break', description: 'Break above 2483.6', level: 2483.6 }]),
+  };
+  // Price at 2486 (which is > 2483.6, but the level was already below entry so it is invalid)
+  assert.equal(checkReversalExit(position, 2486, null), null);
+
+  // For comparison, when condition level was genuinely above entry (e.g. 2495), breaking above 2495 DOES trigger
+  const validPosition = {
+    side: 'short',
+    entry_price: 2485.91,
+    exit_reversal_conditions_json: JSON.stringify([{ type: 'structure_break', description: 'Break above 2495', level: 2495 }]),
+  };
+  assert.equal(checkReversalExit(validPosition, 2490, null), null);
+  const fired = checkReversalExit(validPosition, 2496, null);
+  assert.ok(fired);
+  assert.equal(fired.level, 2495);
+});
+

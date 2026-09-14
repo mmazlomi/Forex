@@ -7,6 +7,7 @@ const futuresAssetsRepository = require('../../database/repositories/futures-ass
 // ...), which only intercepts property access, not a destructured local reference captured at
 // require-time.
 const optimizer = require('../backtesting/optimizer');
+const timeframeSelector = require('./timeframe-selector');
 const logger = require('../logging/logger');
 const config = require('../../../config/config');
 
@@ -38,7 +39,7 @@ let isRunning = false;
  * historical fundamentals aren't available), even though live signals for the selected strategies
  * still apply their real technical+fundamental weights.
  */
-async function rankStrategiesForAsset({ symbol, exchange, timeframe, market }) {
+async function evaluateAssetWithDetails({ symbol, exchange, timeframe, market }) {
   const endUtc = new Date().toISOString();
   const startUtc = new Date(Date.now() - config.strategySelectionLookbackDays * 24 * 60 * 60 * 1000).toISOString();
 
@@ -54,24 +55,103 @@ async function rankStrategiesForAsset({ symbol, exchange, timeframe, market }) {
     }
   }
 
-  const qualifying = [...bestPerStrategy.values()].filter((e) => e.metrics.tradeCount >= config.strategySelectionMinTrades);
-  qualifying.sort((a, b) => b.metrics.winRatePercent - a.metrics.winRatePercent);
+  const allStrategies = [...bestPerStrategy.values()].map((e) => ({
+    strategyId: e.strategyId,
+    strategyName: e.strategyName,
+    buyThreshold: e.buyThreshold,
+    sellThreshold: e.sellThreshold,
+    winRatePercent: e.metrics.winRatePercent,
+    tradeCount: e.metrics.tradeCount,
+    totalPnlPercent: e.metrics.totalPnlPercent,
+    maxDrawdownPercent: e.metrics.maxDrawdownPercent,
+    qualifies: e.metrics.tradeCount >= config.strategySelectionMinTrades,
+  }));
 
-  return qualifying.slice(0, config.strategySelectionCount).map((e) => e.strategyId);
+  allStrategies.sort((a, b) => b.winRatePercent - a.winRatePercent);
+  const selected = allStrategies
+    .filter((s) => s.qualifies)
+    .slice(0, config.strategySelectionCount)
+    .map((s) => s.strategyId);
+
+  return {
+    symbol,
+    exchange,
+    timeframe,
+    market,
+    startUtc,
+    endUtc,
+    lookbackDays: config.strategySelectionLookbackDays,
+    minTrades: config.strategySelectionMinTrades,
+    selectionCount: config.strategySelectionCount,
+    strategies: allStrategies,
+    selected,
+  };
+}
+
+function extractMetricsFromDetails(details) {
+  let topStrategies = (details.strategies || []).filter((s) => (details.selected || []).includes(s.strategyId));
+  if (topStrategies.length === 0) {
+    const withTrades = (details.strategies || []).filter((s) => s.tradeCount > 0);
+    topStrategies = withTrades.slice(0, details.selectionCount || 3);
+  }
+  const avgWinRate = topStrategies.length
+    ? topStrategies.reduce((sum, s) => sum + s.winRatePercent, 0) / topStrategies.length
+    : 0;
+  const avgPnl = topStrategies.length
+    ? topStrategies.reduce((sum, s) => sum + s.totalPnlPercent, 0) / topStrategies.length
+    : 0;
+  const totalTrades = topStrategies.reduce((sum, s) => sum + s.tradeCount, 0);
+  const maxDd = topStrategies.reduce((max, s) => Math.max(max, s.maxDrawdownPercent || 0), 0);
+
+  return {
+    compositeWinRatePercent: Math.round(avgWinRate * 10) / 10,
+    compositePnlPercent: Math.round(avgPnl * 100) / 100,
+    totalTradeCount: totalTrades,
+    maxDrawdownPercent: Math.round(maxDd * 100) / 100,
+    strategies: topStrategies.map((s) => ({
+      strategyId: s.strategyId,
+      strategyName: s.strategyName,
+      winRatePercent: s.winRatePercent,
+      totalPnlPercent: s.totalPnlPercent,
+      tradeCount: s.tradeCount,
+    })),
+  };
+}
+
+async function rankStrategiesForAsset({ symbol, exchange, timeframe, market }) {
+  const details = await evaluateAssetWithDetails({ symbol, exchange, timeframe, market });
+  return details.selected;
 }
 
 async function processSpotAsset(asset) {
   const label = `${asset.symbol}@${asset.exchange} (spot, user ${asset.user_id})`;
   try {
-    const selected = await rankStrategiesForAsset({
-      symbol: asset.symbol, exchange: asset.exchange, timeframe: asset.default_timeframe || '1h', market: 'spot',
+    let timeframe = asset.default_timeframe || '1h';
+    if (asset.autopilot_enabled || asset.timeframe_mode === 'auto') {
+      try {
+        const optimalTf = await timeframeSelector.rankTimeframesForAsset({
+          symbol: asset.symbol, exchange: asset.exchange, market: 'spot',
+        });
+        if (optimalTf) {
+          timeframe = optimalTf;
+          assetsRepository.setAutoSelectedTimeframe(asset.user_id, asset.symbol, asset.exchange, optimalTf);
+        }
+      } catch (tfErr) {
+        logger.warn('strategy-selector', `Failed auto-timeframe selection for ${label}: ${tfErr.message}`);
+      }
+    }
+
+    const details = await evaluateAssetWithDetails({
+      symbol: asset.symbol, exchange: asset.exchange, timeframe, market: 'spot',
     });
+    const selected = details.selected || [];
     if (selected.length < 2) {
       logger.debug('strategy-selector', `Skipped selection update for ${label}: only ${selected.length} strategy(ies) passed the minimum trade-count gate — leaving previous selection in place.`);
       return;
     }
-    assetsRepository.setSelectedStrategies(asset.user_id, asset.symbol, asset.exchange, selected);
-    logger.info('strategy-selector', `Selected [${selected.join(', ')}] for ${label}`);
+    const metrics = extractMetricsFromDetails(details);
+    assetsRepository.setSelectedStrategies(asset.user_id, asset.symbol, asset.exchange, selected, metrics);
+    logger.info('strategy-selector', `Selected [${selected.join(', ')}] on ${timeframe} for ${label} (Avg WR: ${metrics.compositeWinRatePercent}%)`);
   } catch (err) {
     logger.error('strategy-selector', `Selection cycle failed for ${label}: ${err.message}`);
   }
@@ -80,15 +160,32 @@ async function processSpotAsset(asset) {
 async function processFuturesAsset(mode, asset) {
   const label = `${asset.symbol}@${asset.exchange} (futures ${mode}, user ${asset.user_id})`;
   try {
-    const selected = await rankStrategiesForAsset({
-      symbol: asset.symbol, exchange: asset.exchange, timeframe: asset.default_timeframe || '1h', market: 'futures',
+    let timeframe = asset.default_timeframe || '1h';
+    if (asset.autopilot_enabled || asset.timeframe_mode === 'auto') {
+      try {
+        const optimalTf = await timeframeSelector.rankTimeframesForAsset({
+          symbol: asset.symbol, exchange: asset.exchange, market: 'futures',
+        });
+        if (optimalTf) {
+          timeframe = optimalTf;
+          futuresAssetsRepository.setAutoSelectedTimeframe(mode, asset.user_id, asset.symbol, asset.exchange, optimalTf);
+        }
+      } catch (tfErr) {
+        logger.warn('strategy-selector', `Failed auto-timeframe selection for ${label}: ${tfErr.message}`, {}, mode);
+      }
+    }
+
+    const details = await evaluateAssetWithDetails({
+      symbol: asset.symbol, exchange: asset.exchange, timeframe, market: 'futures',
     });
+    const selected = details.selected || [];
     if (selected.length < 2) {
       logger.debug('strategy-selector', `Skipped selection update for ${label}: only ${selected.length} strategy(ies) passed the minimum trade-count gate — leaving previous selection in place.`, {}, mode);
       return;
     }
-    futuresAssetsRepository.setSelectedStrategies(mode, asset.user_id, asset.symbol, asset.exchange, selected);
-    logger.info('strategy-selector', `Selected [${selected.join(', ')}] for ${label}`, {}, mode);
+    const metrics = extractMetricsFromDetails(details);
+    futuresAssetsRepository.setSelectedStrategies(mode, asset.user_id, asset.symbol, asset.exchange, selected, metrics);
+    logger.info('strategy-selector', `Selected [${selected.join(', ')}] on ${timeframe} for ${label} (Avg WR: ${metrics.compositeWinRatePercent}%)`, {}, mode);
   } catch (err) {
     // KuCoin's futures API is confirmed flaky/unreachable from some deployment hosts — a failure
     // here (including a timeout) is an accepted, expected outcome, not a bug; the previous
@@ -152,4 +249,4 @@ function getStatus() {
   };
 }
 
-module.exports = { start, stop, runCycle, getStatus, rankStrategiesForAsset };
+module.exports = { start, stop, runCycle, getStatus, rankStrategiesForAsset, evaluateAssetWithDetails, extractMetricsFromDetails };

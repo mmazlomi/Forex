@@ -366,3 +366,71 @@ test('computeAdaptiveTargets (regression): a support level ABOVE entry (already 
   assert.ok(result.TP2 < result.TP1);
   assert.ok(result.TP3 < result.TP2);
 });
+
+test('buildReversalConditions (short): skips resistance level <= entryPrice (stale/breached)', () => {
+  // Nearest resistance 2483.6 is <= entry price 2485.91
+  const conditions = buildReversalConditions(
+    'short',
+    structure({ nearestResistance: 2483.6, nearestSupport: 2470, resistanceLevels: [2483.6], supportLevels: [2470] }),
+    CONFIG,
+    2485.91
+  );
+  const structureBreak = conditions.find((c) => c.type === 'structure_break');
+  assert.equal(structureBreak, undefined, 'Must not attach an already-breached resistance level as structure_break');
+});
+
+test('buildReversalConditions (long): skips support level >= entryPrice (stale/breached)', () => {
+  // Nearest support 105 is >= entry price 100
+  const conditions = buildReversalConditions(
+    'long',
+    structure({ nearestResistance: 120, nearestSupport: 105, resistanceLevels: [120], supportLevels: [105] }),
+    CONFIG,
+    100
+  );
+  const structureBreak = conditions.find((c) => c.type === 'structure_break');
+  assert.equal(structureBreak, undefined, 'Must not attach an already-breached support level as structure_break');
+});
+
+test('buildReversalConditions (long): skips support within noise buffer (< 0.5 * ATR) and chooses next valid level', () => {
+  // Entry: 101.789, ATR: 0.6317 -> minBuffer = 0.3158 -> valid levels must be <= 101.473
+  // nearestSupport is 101.716 (only 0.073 away, well within noise buffer)
+  // supportLevels has [101.716, 101.66, 101.372]
+  const conditions = buildReversalConditions(
+    'long',
+    structure({
+      nearestResistance: 102.11,
+      nearestSupport: 101.716,
+      resistanceLevels: [102.11],
+      supportLevels: [101.716, 101.66, 101.372],
+    }),
+    CONFIG,
+    101.789,
+    0.6317
+  );
+  const structureBreak = conditions.find((c) => c.type === 'structure_break');
+  assert.ok(structureBreak, 'Expected structure_break with valid candidate');
+  assert.equal(structureBreak.level, 101.372, 'Must skip 101.716 and 101.66 and snap to 101.372 outside noise buffer');
+});
+
+test('buildReversalConditions (short): skips resistance within noise buffer (< 0.5 * ATR) and chooses next valid level', () => {
+  // Entry: 100, ATR: 2 -> minBuffer = 1 -> valid levels must be >= 101
+  // nearestResistance is 100.1 (only 0.1 away)
+  // resistanceLevels has [100.1, 100.4, 101.5]
+  const conditions = buildReversalConditions(
+    'short',
+    structure({
+      nearestResistance: 100.1,
+      nearestSupport: 95,
+      resistanceLevels: [100.1, 100.4, 101.5],
+      supportLevels: [95],
+    }),
+    CONFIG,
+    100,
+    2
+  );
+  const structureBreak = conditions.find((c) => c.type === 'structure_break');
+  assert.ok(structureBreak, 'Expected structure_break with valid candidate');
+  assert.equal(structureBreak.level, 101.5, 'Must skip 100.1 and 100.4 and snap to 101.5 outside noise buffer');
+});
+
+

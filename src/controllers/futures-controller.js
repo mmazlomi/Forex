@@ -389,9 +389,38 @@ async function putRiskSettings(req, res) {
   sendSuccess(res, updated, 'Futures risk settings updated.');
 }
 
+async function setAutopilot(req, res) {
+  const { symbol } = req.params;
+  const exchange = req.query.exchange || 'kucoin';
+  const { enabled } = req.body || {};
+  if (typeof enabled !== 'boolean') {
+    return sendError(res, 'VALIDATION_ERROR', 'enabled must be a boolean.');
+  }
+  const asset = futuresAssetsRepository.setAutopilot(req.tradingMode, req.user.id, symbol, exchange, enabled);
+  if (!asset) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" was found on your ${req.tradingMode} watchlist.`, 404);
+  }
+  sendSuccess(res, asset, `Futures AI Full AutoPilot ${enabled ? 'enabled' : 'disabled'} for ${symbol} (${req.tradingMode}).`);
+}
+
+const TIMEFRAME_MODES = ['manual', 'auto'];
+
+async function setTimeframeMode(req, res) {
+  const { symbol } = req.params;
+  const exchange = req.query.exchange || 'kucoin';
+  const { mode } = req.body || {};
+  if (!TIMEFRAME_MODES.includes(mode)) {
+    return sendError(res, 'VALIDATION_ERROR', `mode must be one of: ${TIMEFRAME_MODES.join(', ')}.`);
+  }
+  const asset = futuresAssetsRepository.setTimeframeMode(req.tradingMode, req.user.id, symbol, exchange, mode);
+  if (!asset) return sendError(res, 'ASSET_NOT_FOUND', `No futures asset "${symbol}" was found on your ${req.tradingMode} watchlist.`, 404);
+  sendSuccess(res, asset, `Timeframe mode set to "${mode}" for ${symbol}.`);
+}
+
 module.exports = {
   listSymbols, listFuturesExchanges, getPortfolio, getTradeHistory, listOrders, postDemoOrder, postRealOrder,
   listAssets, addAsset, removeAsset, setAutoTrade, setLeverage, setExchange, setStrategy, setTimeframe, setStrategyMode,
   getRiskSettings, putRiskSettings, setTrailingPercent,
-  setLsrTimeframeMode, setLsrManualTimeframes, setAdaptiveTp,
+  setLsrTimeframeMode, setLsrManualTimeframes, setAdaptiveTp, setAutopilot, setTimeframeMode,
 };
+

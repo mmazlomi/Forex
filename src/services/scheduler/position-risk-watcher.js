@@ -17,6 +17,8 @@ const technicalScorer = require('../signals/technical-scorer');
 const { computeRealizedR } = require('../risk/realized-r');
 const logger = require('../logging/logger');
 const config = require('../../../config/config');
+const protectionsService = require('../risk/protections-service');
+const telegramNotifier = require('../notifications/telegram-notifier');
 
 // A live technicalScore (see technical-scorer.js, range [-1,+1]) at or beyond this magnitude,
 // opposing the position's direction, counts as a fired 'reversal_signal' condition — see
@@ -128,6 +130,15 @@ function checkReversalExit(position, currentPrice, freshIndicators) {
 
   for (const condition of conditions) {
     if (condition.type === 'structure_break' && typeof condition.level === 'number') {
+      // Guard: Ensure condition.level was genuinely valid relative to entry price.
+      // A resistance level for short must be > entry_price; a support level for long must be < entry_price.
+      // If it was already breached before/at entry, ignore this condition.
+      if (typeof position.entry_price === 'number') {
+        const wasValidAtEntry = side === 'long'
+          ? condition.level < position.entry_price
+          : condition.level > position.entry_price;
+        if (!wasValidAtEntry) continue;
+      }
       const broke = side === 'long' ? currentPrice < condition.level : currentPrice > condition.level;
       if (broke) return condition;
     }
@@ -186,6 +197,28 @@ function logTriggerResult(mode, market, position, reason, snapshotPrice, order) 
     { positionId: position.id, userId: position.user_id, orderId: order.id, rejectReason: order.reject_reason },
     mode
   );
+
+  if (order.status === 'filled') {
+    if (reason === 'stop_loss') {
+      protectionsService.recordStopLoss(position.symbol, mode);
+      telegramNotifier.notifyStopLoss({
+        mode,
+        market,
+        symbol: position.symbol,
+        price: snapshotPrice,
+        realizedPnl: order.realized_pnl,
+      });
+    } else if (reason === 'take_profit') {
+      telegramNotifier.notifyTakeProfit({
+        mode,
+        market,
+        symbol: position.symbol,
+        stage: 'Take-Profit',
+        price: snapshotPrice,
+        realizedPnl: order.realized_pnl,
+      });
+    }
+  }
 }
 
 /** Fetches fresh candles + runs every indicator, for checkReversalExit's 'reversal_signal'
@@ -233,6 +266,14 @@ function logAdaptivePartialFill(mode, market, position, tier, order) {
     { positionId: position.id, userId: position.user_id, orderId: order.id, level: tier.level, qty: order.qty, price: order.price, legPnl: order.realized_pnl },
     mode
   );
+  telegramNotifier.notifyTakeProfit({
+    mode,
+    market,
+    symbol: position.symbol,
+    stage: `TP${tier.level} Partial`,
+    price: order.price,
+    realizedPnl: order.realized_pnl,
+  });
 }
 
 function logAdaptiveFinalExit(mode, market, position, order, reasonLabel) {
@@ -243,6 +284,16 @@ function logAdaptiveFinalExit(mode, market, position, order, reasonLabel) {
     { positionId: position.id, userId: position.user_id, orderId: order.id, realizedPnl: order.realized_pnl, realizedR },
     mode
   );
+  telegramNotifier.notifyPositionClosed({
+    mode,
+    market,
+    symbol: position.symbol,
+    side: position.side || 'long',
+    entryPrice: position.entry_price,
+    exitPrice: order.price,
+    realizedPnl: order.realized_pnl,
+    exitReason: reasonLabel,
+  });
 }
 
 function logAdaptiveTrailingSeed(mode, market, position, seeded) {
@@ -307,7 +358,10 @@ async function handleAdaptiveSpotPosition(mode, position, currentPrice) {
       );
       const reloaded = positionsRepository.getPosition(mode, position.user_id, position.id);
       if (reloaded) Object.assign(position, reloaded);
-      if (order.status === 'filled') logAdaptiveFinalExit(mode, 'spot', position, order, 'reversal');
+      if (order.status === 'filled') {
+        protectionsService.recordReversalExit(position.symbol, mode);
+        logAdaptiveFinalExit(mode, 'spot', position, order, 'reversal');
+      }
       return true;
     }
   }
@@ -370,7 +424,10 @@ async function handleAdaptiveFuturesPosition(mode, position, currentPrice) {
       );
       const reloaded = futuresPositionsRepository.getPosition(mode, position.user_id, position.id);
       if (reloaded) Object.assign(position, reloaded);
-      if (order.status === 'filled') logAdaptiveFinalExit(mode, 'futures', position, order, 'reversal');
+      if (order.status === 'filled') {
+        protectionsService.recordReversalExit(position.symbol, mode);
+        logAdaptiveFinalExit(mode, 'futures', position, order, 'reversal');
+      }
       return true;
     }
   }

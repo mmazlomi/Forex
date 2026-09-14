@@ -141,12 +141,13 @@ function setStrategyMode(mode, userId, symbol, exchange, strategyMode) {
   return getAsset(mode, userId, symbol, exchange);
 }
 
-function setSelectedStrategies(mode, userId, symbol, exchange, strategyIds) {
+function setSelectedStrategies(mode, userId, symbol, exchange, strategyIds, metrics = null) {
   const db = getDb();
   const table = futuresAssetsTable(mode);
+  const metricsJson = metrics ? JSON.stringify(metrics) : null;
   const result = db
-    .prepare(`UPDATE ${table} SET selected_strategy_ids_json = ?, strategy_selection_updated_at_utc = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
-    .run(JSON.stringify(strategyIds), new Date().toISOString(), userId, symbol, exchange);
+    .prepare(`UPDATE ${table} SET selected_strategy_ids_json = ?, strategy_selection_updated_at_utc = ?, strategy_selection_metrics_json = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
+    .run(JSON.stringify(strategyIds), new Date().toISOString(), metricsJson, userId, symbol, exchange);
   if (result.changes === 0) return null;
   return getAsset(mode, userId, symbol, exchange);
 }
@@ -198,10 +199,70 @@ function listLsrAutoTimeframeModeAssets(mode) {
   return db.prepare(`SELECT * FROM ${table} WHERE lsr_timeframe_mode = 'auto'`).all();
 }
 
+// Sets or clears Full AutoPilot mode for this futures asset (Demo or Real).
+// When enabled: cascades strategy_mode='auto', timeframe_mode='auto', trailing_mode='atr', trailing_percent=null,
+// adaptive_tp_enabled=1, auto_trade_enabled=1, and autopilot_enabled=1.
+// When disabled: sets autopilot_enabled=0.
+function setAutopilot(mode, userId, symbol, exchange, enabled) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  let result;
+  if (enabled) {
+    result = db
+      .prepare(`
+        UPDATE ${table}
+        SET autopilot_enabled = 1,
+            strategy_mode = 'auto',
+            timeframe_mode = 'auto',
+            trailing_mode = 'atr',
+            trailing_percent = NULL,
+            adaptive_tp_enabled = 1,
+            auto_trade_enabled = 1
+        WHERE user_id = ? AND symbol = ? AND exchange = ?
+      `)
+      .run(userId, symbol, exchange);
+  } else {
+    result = db
+      .prepare(`UPDATE ${table} SET autopilot_enabled = 0 WHERE user_id = ? AND symbol = ? AND exchange = ?`)
+      .run(userId, symbol, exchange);
+  }
+  if (result.changes === 0) return null;
+  return getAsset(mode, userId, symbol, exchange);
+}
+
+function setTimeframeMode(mode, userId, symbol, exchange, tfMode) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  const result = db
+    .prepare(`UPDATE ${table} SET timeframe_mode = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
+    .run(tfMode, userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(mode, userId, symbol, exchange);
+}
+
+function setAutoSelectedTimeframe(mode, userId, symbol, exchange, timeframe) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  const result = db
+    .prepare(`UPDATE ${table} SET default_timeframe = ?, timeframe_selection_updated_at_utc = ? WHERE user_id = ? AND symbol = ? AND exchange = ?`)
+    .run(timeframe, new Date().toISOString(), userId, symbol, exchange);
+  if (result.changes === 0) return null;
+  return getAsset(mode, userId, symbol, exchange);
+}
+
+function listAutoTimeframeAssets(mode) {
+  const db = getDb();
+  const table = futuresAssetsTable(mode);
+  return db.prepare(`SELECT * FROM ${table} WHERE timeframe_mode = 'auto' OR autopilot_enabled = 1`).all();
+}
+
 module.exports = {
   listAssets, getAsset, addAsset, removeAsset, setAutoTrade, setLeverage, setExchange,
   listAutoTradeEnabled, setStrategy, setTimeframe,
   setStrategyMode, setSelectedStrategies, listAutoStrategyModeAssets, setTrailingPercent,
   setLsrTimeframeMode, setLsrManualTimeframes, setLsrSelectedTimeframes, listLsrAutoTimeframeModeAssets,
-  setAdaptiveTpEnabled,
+  setAdaptiveTpEnabled, setAutopilot,
+  setTimeframeMode, setAutoSelectedTimeframe, listAutoTimeframeAssets,
 };
+
+

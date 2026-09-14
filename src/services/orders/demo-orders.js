@@ -10,6 +10,8 @@ const ordersRepository = require('../../database/repositories/orders-repository'
 const positionsRepository = require('../../database/repositories/positions-repository');
 const logger = require('../logging/logger');
 const { validateTrade } = require('../risk/validate-trade');
+const protectionsService = require('../risk/protections-service');
+const telegramNotifier = require('../notifications/telegram-notifier');
 
 const MODE = 'demo';
 const DUPLICATE_WINDOW_MS = 5000;
@@ -82,6 +84,23 @@ async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takePr
 
   if (emergencyStopRepository.isActive(MODE, userId)) {
     return persistRejected({ id, userId, symbol, side, stopLoss, takeProfit, price, reasonCode: 'EMERGENCY_STOP_ACTIVE', message: 'Demo trading is halted by an active emergency stop.', idempotencyKey, signalId });
+  }
+
+  const cooldown = protectionsService.isCooldownActive(symbol, MODE);
+  if (side === 'buy' && cooldown.active) {
+    return persistRejected({
+      id,
+      userId,
+      symbol,
+      side,
+      stopLoss,
+      takeProfit,
+      price,
+      reasonCode: 'PROTECTION_COOLDOWN_ACTIVE',
+      message: `Demo trading is halted for ${symbol} by protection cooldown (${cooldown.remainingMinutes}m remaining).`,
+      idempotencyKey,
+      signalId,
+    });
   }
 
   const isDuplicate = !!ordersRepository.findRecentSimilarOrder(MODE, userId, { symbol, side, price, windowMs: DUPLICATE_WINDOW_MS });
@@ -179,6 +198,15 @@ async function placeDemoOrder({ userId, symbol, exchange, side, stopLoss, takePr
   });
 
   logger.info('demo-orders', `Demo BUY filled for ${symbol}`, { qty: validation.positionSize, price, positionId: position.id }, MODE);
+  telegramNotifier.notifyOrderPlaced({
+    mode: MODE,
+    market: 'spot',
+    symbol,
+    side: 'buy',
+    orderType,
+    price,
+    qty: validation.positionSize,
+  });
   return order;
 }
 
@@ -208,6 +236,16 @@ function closeDemoPosition({ id, userId, symbol, price, idempotencyKey, signalId
   });
 
   logger.info('demo-orders', `Demo SELL closed position for ${symbol}`, { realizedPnl, positionId: openPosition.id }, MODE);
+  telegramNotifier.notifyPositionClosed({
+    mode: MODE,
+    market: 'spot',
+    symbol,
+    side: 'sell',
+    entryPrice: openPosition.entry_price,
+    exitPrice: price,
+    realizedPnl,
+    exitReason: reason ?? 'manual',
+  });
   return order;
 }
 

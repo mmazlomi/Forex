@@ -11,7 +11,12 @@ const adx = require('./adx');
 const ichimoku = require('./ichimoku');
 const supportResistance = require('./support-resistance');
 const volumeAnalysis = require('./volume-analysis');
+const supertrend = require('./supertrend');
+const fairValueGap = require('./fair-value-gap');
+const volumeProfile = require('./volume-profile');
 const { computeIndicatorSeries } = require('./series');
+
+const { classifyMarketRegime } = require('./market-regime');
 
 /**
  * Computes every indicator against the given candle series (oldest-first). Each indicator
@@ -19,7 +24,7 @@ const { computeIndicatorSeries } = require('./series');
  * MACD (needs 35 candles) never blocks RSI (needs 15) from returning a value.
  */
 function computeAllIndicators(candles, params = {}) {
-  return {
+  const indicators = {
     sma: sma.compute(candles, params.sma),
     ema: ema.compute(candles, params.ema),
     rsi: rsi.compute(candles, params.rsi),
@@ -31,7 +36,12 @@ function computeAllIndicators(candles, params = {}) {
     ichimoku: ichimoku.compute(candles, params.ichimoku),
     supportResistance: supportResistance.compute(candles, params.supportResistance),
     volumeAnalysis: volumeAnalysis.compute(candles, params.volumeAnalysis),
+    supertrend: supertrend.compute(candles, params.supertrend),
+    fairValueGap: fairValueGap.compute(candles, params.fairValueGap),
+    volumeProfile: volumeProfile.compute(candles, params.volumeProfile),
   };
+  indicators.marketRegime = classifyMarketRegime(candles, indicators);
+  return indicators;
 }
 
 module.exports = {
@@ -48,4 +58,9 @@ module.exports = {
   ichimoku,
   supportResistance,
   volumeAnalysis,
+  supertrend,
+  fairValueGap,
+  volumeProfile,
+  marketRegime: { classify: classifyMarketRegime },
 };
+

@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startAuthedTestServer } = require('../fixtures/test-server');
+const exchangeClientFactory = require('../../src/services/exchanges/exchange-client-factory');
 
 async function json(res) {
   return res.json();
@@ -11,6 +12,11 @@ async function json(res) {
 test('PUT /api/assets/:symbol/adaptive-tp toggles the opt-in flag, defaults to off, validates input', async (t) => {
   const { close, authedFetch } = await startAuthedTestServer();
   t.after(close);
+
+  t.mock.method(exchangeClientFactory, 'getPublicExchange', () => ({
+    loadMarkets: async () => {},
+    markets: { 'BTC/USDT': { symbol: 'BTC/USDT', active: true } },
+  }));
 
   await authedFetch('/api/assets', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

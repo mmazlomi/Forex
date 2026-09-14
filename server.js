@@ -19,6 +19,7 @@ const reversalAutoTrader = require('./src/services/scheduler/reversal-auto-trade
 const reversalSpotAutoTrader = require('./src/services/scheduler/reversal-spot-auto-trader');
 const strategySelector = require('./src/services/scheduler/strategy-selector');
 const lsrTimeframeSelector = require('./src/services/scheduler/lsr-timeframe-selector');
+const timeframeSelector = require('./src/services/scheduler/timeframe-selector');
 
 const KNOWN_SECRETS = [
   config.demoExchange.apiKey,
@@ -26,6 +27,7 @@ const KNOWN_SECRETS = [
   config.realExchange.apiKey,
   config.realExchange.apiSecret,
   config.fundamentalApiKey,
+  config.telegramBotToken,
 ].filter(Boolean);
 
 // Reverse-proxy path prefixes this app is reachable under (in addition to its own root) —
@@ -110,6 +112,7 @@ function start() {
   reversalSpotAutoTrader.start();
   strategySelector.start();
   lsrTimeframeSelector.start();
+  timeframeSelector.start();
 
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {

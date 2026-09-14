@@ -73,8 +73,21 @@ async function getFundamentals(req, res) {
   if (!['crypto', 'stock'].includes(assetType)) {
     return sendError(res, 'VALIDATION_ERROR', 'assetType must be "crypto" or "stock".');
   }
-  const fundamentals = await fundamentalAnalysis.getFundamentals({ symbol, assetType, providerId });
-  sendSuccess(res, fundamentals);
+  const data = await fundamentalAnalysis.getFundamentals({ symbol, assetType, providerId });
+  sendSuccess(res, data);
 }
 
-module.exports = { getMarketData, getCandles, getIndicators, getIndicatorSeries, getFundamentals };
+async function getFearAndGreed(req, res) {
+  const fearAndGreedService = require('../services/fundamental-analysis/fear-and-greed');
+  const data = await fearAndGreedService.getFearAndGreed();
+  sendSuccess(res, data);
+}
+
+module.exports = {
+  getMarketData,
+  getCandles,
+  getIndicators,
+  getIndicatorSeries,
+  getFundamentals,
+  getFearAndGreed,
+};

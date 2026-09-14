@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS assets (
   strategy_mode TEXT NOT NULL DEFAULT 'manual',
   selected_strategy_ids_json TEXT,
   strategy_selection_updated_at_utc TEXT,
+  strategy_selection_metrics_json TEXT,
   real_auto_trade_enabled INTEGER NOT NULL DEFAULT 0,
   trailing_percent REAL,
   trailing_mode TEXT NOT NULL DEFAULT 'fixed',
@@ -51,6 +52,9 @@ CREATE TABLE IF NOT EXISTS assets (
   lsr_entry_timeframe TEXT,
   lsr_selected_timeframes_json TEXT,
   lsr_timeframe_selection_updated_at_utc TEXT,
+  autopilot_enabled INTEGER NOT NULL DEFAULT 0,
+  timeframe_mode TEXT NOT NULL DEFAULT 'manual',
+  timeframe_selection_updated_at_utc TEXT,
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -447,6 +451,7 @@ CREATE TABLE IF NOT EXISTS demo_futures_assets (
   strategy_mode TEXT NOT NULL DEFAULT 'manual',
   selected_strategy_ids_json TEXT,
   strategy_selection_updated_at_utc TEXT,
+  strategy_selection_metrics_json TEXT,
   trailing_percent REAL,
   trailing_mode TEXT NOT NULL DEFAULT 'fixed',
   lsr_timeframe_mode TEXT NOT NULL DEFAULT 'manual',
@@ -455,6 +460,9 @@ CREATE TABLE IF NOT EXISTS demo_futures_assets (
   lsr_entry_timeframe TEXT,
   lsr_selected_timeframes_json TEXT,
   lsr_timeframe_selection_updated_at_utc TEXT,
+  autopilot_enabled INTEGER NOT NULL DEFAULT 0,
+  timeframe_mode TEXT NOT NULL DEFAULT 'manual',
+  timeframe_selection_updated_at_utc TEXT,
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -471,6 +479,7 @@ CREATE TABLE IF NOT EXISTS real_futures_assets (
   strategy_mode TEXT NOT NULL DEFAULT 'manual',
   selected_strategy_ids_json TEXT,
   strategy_selection_updated_at_utc TEXT,
+  strategy_selection_metrics_json TEXT,
   trailing_percent REAL,
   trailing_mode TEXT NOT NULL DEFAULT 'fixed',
   lsr_timeframe_mode TEXT NOT NULL DEFAULT 'manual',
@@ -479,6 +488,9 @@ CREATE TABLE IF NOT EXISTS real_futures_assets (
   lsr_entry_timeframe TEXT,
   lsr_selected_timeframes_json TEXT,
   lsr_timeframe_selection_updated_at_utc TEXT,
+  autopilot_enabled INTEGER NOT NULL DEFAULT 0,
+  timeframe_mode TEXT NOT NULL DEFAULT 'manual',
+  timeframe_selection_updated_at_utc TEXT,
   UNIQUE(user_id, symbol, exchange)
 );
 
@@ -602,6 +614,9 @@ function migrateAddStrategySelectionColumns(db, table) {
   }
   if (!columns.some((c) => c.name === 'strategy_selection_updated_at_utc')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN strategy_selection_updated_at_utc TEXT`);
+  }
+  if (!columns.some((c) => c.name === 'strategy_selection_metrics_json')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN strategy_selection_metrics_json TEXT`);
   }
 }
 
@@ -755,6 +770,33 @@ function migrateAddAssetAdaptiveTpColumn(db, table) {
   if (!names.has('adaptive_tp_enabled')) db.exec(`ALTER TABLE ${table} ADD COLUMN adaptive_tp_enabled INTEGER NOT NULL DEFAULT 0`);
   if (!names.has('adaptive_tp_config_json')) db.exec(`ALTER TABLE ${table} ADD COLUMN adaptive_tp_config_json TEXT`);
 }
+
+// One-time migration for Full AutoPilot mode: assets/demo_futures_assets/real_futures_assets gain
+// autopilot_enabled (0 = manual controls, 1 = full AI autopilot with auto strategy selection,
+// ATR dynamic trailing stop, staged adaptive TP, and automated position sizing).
+function migrateAddAutopilotColumn(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((c) => c.name === 'autopilot_enabled')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN autopilot_enabled INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+
+// One-time migration for Auto Timeframe selection: assets/demo_futures_assets/real_futures_assets gain
+// timeframe_mode ('manual' default or 'auto' for dynamic timeframe optimization) and
+// timeframe_selection_updated_at_utc (timestamp of last auto-selection).
+function migrateAddTimeframeModeColumns(db, table) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  const names = new Set(columns.map((c) => c.name));
+  if (!names.has('timeframe_mode')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN timeframe_mode TEXT NOT NULL DEFAULT 'manual'`);
+  }
+  if (!names.has('timeframe_selection_updated_at_utc')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN timeframe_selection_updated_at_utc TEXT`);
+  }
+  db.exec(`UPDATE ${table} SET timeframe_mode = 'auto' WHERE autopilot_enabled = 1 AND (timeframe_mode IS NULL OR timeframe_mode = 'manual')`);
+}
+
+
 
 // One-time migration for databases created before LSR's auto timeframe-selection existed:
 // assets/demo_futures_assets/real_futures_assets gain lsr_timeframe_mode ('manual' default —
@@ -1096,6 +1138,8 @@ function applySchema(db) {
     migrateAddAssetTrailingModeColumn(db, table);
     migrateAddLsrTimeframeColumns(db, table);
     migrateAddAssetAdaptiveTpColumn(db, table);
+    migrateAddAutopilotColumn(db, table);
+    migrateAddTimeframeModeColumns(db, table);
   }
 }
 

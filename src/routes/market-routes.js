@@ -11,5 +11,6 @@ router.get('/candles', asyncHandler(controller.getCandles));
 router.get('/indicators', asyncHandler(controller.getIndicators));
 router.get('/indicator-series', asyncHandler(controller.getIndicatorSeries));
 router.get('/fundamentals', asyncHandler(controller.getFundamentals));
+router.get('/fear-and-greed', asyncHandler(controller.getFearAndGreed));
 
 module.exports = router;

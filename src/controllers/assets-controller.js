@@ -296,7 +296,44 @@ async function setLsrManualTimeframes(req, res) {
   sendSuccess(res, asset, `LSR timeframe override updated for ${symbol}.`);
 }
 
+async function setAutopilot(req, res) {
+  const { symbol } = req.params;
+  const { exchange } = req.query;
+  const { enabled } = req.body || {};
+  if (!exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
+  }
+  if (typeof enabled !== 'boolean') {
+    return sendError(res, 'VALIDATION_ERROR', 'enabled must be a boolean.');
+  }
+  const asset = assetsRepository.setAutopilot(req.user.id, symbol, exchange, enabled);
+  if (!asset) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
+  }
+  sendSuccess(res, asset, `AI Full AutoPilot ${enabled ? 'enabled' : 'disabled'} for ${symbol}.`);
+}
+
+const TIMEFRAME_MODES = ['manual', 'auto'];
+
+async function setTimeframeMode(req, res) {
+  const { symbol } = req.params;
+  const { exchange } = req.query;
+  const { mode } = req.body || {};
+  if (!exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
+  }
+  if (!TIMEFRAME_MODES.includes(mode)) {
+    return sendError(res, 'VALIDATION_ERROR', `mode must be one of: ${TIMEFRAME_MODES.join(', ')}.`);
+  }
+  const asset = assetsRepository.setTimeframeMode(req.user.id, symbol, exchange, mode);
+  if (!asset) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No asset "${symbol}" on "${exchange}" was found on your watchlist.`, 404);
+  }
+  sendSuccess(res, asset, `Timeframe mode set to "${mode}" for ${symbol}.`);
+}
+
 module.exports = {
-  listAssets, addAsset, removeAsset, setAutoTrade, setRealAutoTrade, setStrategy, setTimeframe, setExchange, setStrategyMode, setTrailingPercent,
-  setLsrTimeframeMode, setLsrManualTimeframes, setAdaptiveTp,
+  listAssets, addAsset, removeAsset, setAutoTrade, setStrategy, setTimeframe, setExchange,
+  setStrategyMode, setRealAutoTrade, setTrailingPercent, setLsrTimeframeMode, setLsrManualTimeframes,
+  setAdaptiveTp, setAutopilot, setTimeframeMode,
 };

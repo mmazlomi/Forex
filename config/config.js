@@ -63,6 +63,11 @@ const config = Object.freeze({
   maxApiRetries: parseInteger('MAX_API_RETRIES', env.MAX_API_RETRIES, 3),
   proxyUrl: env.HTTPS_PROXY || env.HTTP_PROXY || env.ALL_PROXY || env.PROXY_URL || '',
 
+  // Telegram Notifications
+  telegramBotToken: env.TELEGRAM_BOT_TOKEN || '',
+  telegramChatId: env.TELEGRAM_CHAT_ID || '',
+  telegramNotificationsEnabled: parseBool(env.TELEGRAM_NOTIFICATIONS_ENABLED, false),
+
   // Addition beyond the original .env.example spec, for the AI auto-trading feature —
   // see docs/architecture.md. Auto-trading only ever runs in Demo mode.
   autoTradeIntervalMs: parseInteger('AUTO_TRADE_INTERVAL_MS', env.AUTO_TRADE_INTERVAL_MS, 5 * 60 * 1000),
@@ -117,6 +122,13 @@ const config = Object.freeze({
   lsrTimeframeSelectionIntervalMs: parseInteger('LSR_TIMEFRAME_SELECTION_INTERVAL_MS', env.LSR_TIMEFRAME_SELECTION_INTERVAL_MS, 12 * 60 * 60 * 1000),
   lsrTimeframeSelectionLookbackDays: parseInteger('LSR_TIMEFRAME_SELECTION_LOOKBACK_DAYS', env.LSR_TIMEFRAME_SELECTION_LOOKBACK_DAYS, 90),
   lsrTimeframeSelectionMinTrades: parseInteger('LSR_TIMEFRAME_SELECTION_MIN_TRADES', env.LSR_TIMEFRAME_SELECTION_MIN_TRADES, 3),
+
+  // timeframe-selector.js picks the optimal candle timeframe (15m, 1h, 4h) for an asset with
+  // timeframe_mode='auto' (or under Full AutoPilot).
+  timeframeSelectionIntervalMs: parseInteger('TIMEFRAME_SELECTION_INTERVAL_MS', env.TIMEFRAME_SELECTION_INTERVAL_MS, 12 * 60 * 60 * 1000),
+  timeframeSelectionLookbackDays: parseInteger('TIMEFRAME_SELECTION_LOOKBACK_DAYS', env.TIMEFRAME_SELECTION_LOOKBACK_DAYS, 30),
+  timeframeSelectionMinTrades: parseInteger('TIMEFRAME_SELECTION_MIN_TRADES', env.TIMEFRAME_SELECTION_MIN_TRADES, 5),
+  timeframeCandidates: ['15m', '1h', '4h'],
 });
 
 function validateConfig(cfg) {
@@ -183,6 +195,15 @@ function validateConfig(cfg) {
   }
   if (cfg.lsrTimeframeSelectionMinTrades < 1) {
     errors.push(`LSR_TIMEFRAME_SELECTION_MIN_TRADES must be >= 1, got ${cfg.lsrTimeframeSelectionMinTrades}.`);
+  }
+  if (cfg.timeframeSelectionIntervalMs < 60 * 60 * 1000) {
+    errors.push(`TIMEFRAME_SELECTION_INTERVAL_MS must be >= 3600000 (1h), got ${cfg.timeframeSelectionIntervalMs} — this runs backtests and shouldn't be scheduled too tightly.`);
+  }
+  if (cfg.timeframeSelectionLookbackDays < 1) {
+    errors.push(`TIMEFRAME_SELECTION_LOOKBACK_DAYS must be >= 1, got ${cfg.timeframeSelectionLookbackDays}.`);
+  }
+  if (cfg.timeframeSelectionMinTrades < 1) {
+    errors.push(`TIMEFRAME_SELECTION_MIN_TRADES must be >= 1, got ${cfg.timeframeSelectionMinTrades}.`);
   }
   if (cfg.coingeckoMinIntervalMs < 0) {
     errors.push(`COINGECKO_MIN_INTERVAL_MS must be >= 0, got ${cfg.coingeckoMinIntervalMs}.`);

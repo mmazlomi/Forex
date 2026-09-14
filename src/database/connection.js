@@ -27,6 +27,12 @@ function getDb() {
 function resetForTests() {
   if (db) db.close();
   db = null;
+  try {
+    const protectionsService = require('../services/risk/protections-service');
+    protectionsService.resetAllCooldowns();
+  } catch {
+    // Ignore if not loaded yet
+  }
 }
 
 module.exports = { getDb, resetForTests };

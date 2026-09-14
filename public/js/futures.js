@@ -190,10 +190,80 @@ const Futures = (() => {
     }
   }
 
+  const POPULAR_MAJORS = [
+    'BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'ADA', 'AVAX', 'LINK', 'SUI',
+    'PEPE', 'NEAR', 'DOT', 'LTC', 'BCH', 'SHIB', 'TRX', 'UNI', 'APT', 'FET',
+    'RENDER', 'TAO', 'INJ', 'ATOM', 'FIL', 'ARB', 'OP', 'POL', 'XLM', 'KAS'
+  ];
+
+  function filterAndRankSymbols(symbols, filterText) {
+    const query = (filterText || '').trim().toUpperCase();
+
+    if (!query) {
+      const majors = [];
+      const others = [];
+      const seen = new Set();
+
+      for (const major of POPULAR_MAJORS) {
+        for (const s of symbols) {
+          const base = s.split('/')[0].toUpperCase();
+          if (base === major && !seen.has(s)) {
+            majors.push(s);
+            seen.add(s);
+          }
+        }
+      }
+
+      for (const s of symbols) {
+        if (!seen.has(s)) {
+          others.push(s);
+        }
+      }
+      return majors.concat(others).slice(0, 30);
+    }
+
+    const tier1 = [];
+    const tier2 = [];
+    const tier3 = [];
+    const tier4 = [];
+
+    for (const s of symbols) {
+      const upper = s.toUpperCase();
+      const base = (upper.split('/')[0] || '').trim();
+
+      if (base === query) {
+        tier1.push(s);
+      } else if (base.startsWith(query)) {
+        tier2.push(s);
+      } else if (base.includes(query)) {
+        tier3.push(s);
+      } else if (upper.includes(query)) {
+        tier4.push(s);
+      }
+    }
+
+    const rankWithMajors = (list) => {
+      return list.sort((a, b) => {
+        const baseA = a.split('/')[0].toUpperCase();
+        const baseB = b.split('/')[0].toUpperCase();
+        const idxA = POPULAR_MAJORS.indexOf(baseA);
+        const idxB = POPULAR_MAJORS.indexOf(baseB);
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        return a.localeCompare(b);
+      });
+    };
+
+    const sortedTier2 = rankWithMajors(tier2);
+    const sortedTier3 = rankWithMajors(tier3);
+
+    return [...tier1, ...sortedTier2, ...sortedTier3, ...tier4].slice(0, 30);
+  }
+
   function showSymbolSuggestions(filterText) {
     const list = document.getElementById('futures-symbol-suggestions-list');
-    const filter = filterText.trim().toUpperCase();
-    const matches = (filter ? symbolsCache.filter((s) => s.toUpperCase().includes(filter)) : symbolsCache).slice(0, 25);
+    const matches = filterAndRankSymbols(symbolsCache, filterText);
     clear(list);
     matches.forEach((s) => list.appendChild(el('li', {}, s)));
     list.hidden = matches.length === 0;
@@ -202,6 +272,7 @@ const Futures = (() => {
   function hideSymbolSuggestions() {
     document.getElementById('futures-symbol-suggestions-list').hidden = true;
   }
+
 
   // ---------- portfolio / positions / orders ----------
 
@@ -321,7 +392,7 @@ const Futures = (() => {
   // Replaces the normal Timeframe <select> for an LSR-tagged asset row — private copy, mirroring
   // dashboard.js's identical helper (see its comment for the full rationale).
   function buildLsrTimeframeCell(asset, apiSetMode) {
-    const cell = el('td', { class: 'lsr-timeframe-cell' });
+    const cell = el('div', { class: 'lsr-timeframe-cell-wrap' });
     const checkbox = el('input', { type: 'checkbox' });
     checkbox.checked = asset.lsr_timeframe_mode === 'auto';
     checkbox.title = 'Auto: periodically backtest a set of htf/signal/entry timeframe combinations for this LSR asset and use whichever ranks best, instead of the fixed 4h/15m/5m default.';
@@ -574,12 +645,16 @@ const Futures = (() => {
         exchangeCell.appendChild(exchangeSelect);
         row.appendChild(exchangeCell);
 
+        const isAutoPilot = !!asset.autopilot_enabled;
+        const isAutoTimeframe = isAutoPilot || asset.timeframe_mode === 'auto';
+
         const timeframeSelect = el('select');
         TIMEFRAME_OPTIONS.forEach((tf) => {
           const opt = el('option', { value: tf }, tf);
           if (tf === (asset.default_timeframe || '1h')) opt.setAttribute('selected', 'selected');
           timeframeSelect.appendChild(opt);
         });
+        timeframeSelect.disabled = isAutoTimeframe;
         timeframeSelect.title = 'Also used by AI Auto-Trade — changing it changes which candle timeframe the auto-trader analyzes for this asset.';
         timeframeSelect.addEventListener('change', async () => {
           try {
@@ -589,15 +664,41 @@ const Futures = (() => {
             toast(`Failed to update timeframe: ${err.message}`, 'error');
           }
         });
-        const timeframeCell = el('td');
+
+        const timeframeAutoCheckbox = el('input', { type: 'checkbox' });
+        timeframeAutoCheckbox.checked = isAutoTimeframe;
+        timeframeAutoCheckbox.disabled = isAutoPilot;
+        timeframeAutoCheckbox.title = isAutoPilot
+          ? '🚀 AI Full AutoPilot automatically selects the optimal timeframe'
+          : 'Auto: let AI periodically evaluate and pick the highest win-rate timeframe (15m, 1h, 4h)';
+
+        timeframeAutoCheckbox.addEventListener('change', async () => {
+          const useAuto = timeframeAutoCheckbox.checked;
+          try {
+            await Api.setFuturesTimeframeMode(mode, asset.symbol, asset.exchange, useAuto ? 'auto' : 'manual');
+            asset.timeframe_mode = useAuto ? 'auto' : 'manual';
+            timeframeSelect.disabled = useAuto;
+            toast(useAuto ? `Auto-timeframe enabled for ${asset.symbol}.` : `Manual timeframe set for ${asset.symbol}.`, 'success');
+          } catch (err) {
+            timeframeAutoCheckbox.checked = !useAuto;
+            toast(`Failed to update timeframe mode: ${err.message}`, 'error');
+          }
+        });
+
+        const timeframeCell = el('td', { class: 'timeframe-cell' });
         if (asset.strategy_id === LSR_STRATEGY_ID) {
           timeframeCell.appendChild(buildLsrTimeframeCell(asset, (tfMode) => Api.setFuturesLsrTimeframeMode(mode, asset.symbol, asset.exchange, tfMode)));
         } else {
-          timeframeCell.appendChild(timeframeSelect);
+          const timeframeWrap = el('div', { class: 'timeframe-cell-wrap' });
+          timeframeWrap.appendChild(timeframeSelect);
+          timeframeWrap.appendChild(timeframeAutoCheckbox);
+          timeframeWrap.appendChild(el('span', { class: 'timeframe-auto-label' }, ' auto'));
+          timeframeCell.appendChild(timeframeWrap);
         }
         row.appendChild(timeframeCell);
 
-        const leverageInput = el('input', { type: 'number', min: '1', step: '1', value: String(asset.leverage) });
+        const leverageInput = el('input', { type: 'number', min: '1', step: '1', value: String(asset.leverage), class: 'leverage-input' });
+        leverageInput.title = 'Futures leverage (e.g. 3 for 3x).';
         leverageInput.addEventListener('change', async () => {
           try {
             await Api.setFuturesLeverage(mode, asset.symbol, asset.exchange, Number(leverageInput.value));
@@ -606,15 +707,38 @@ const Futures = (() => {
             toast(`Failed to update leverage: ${err.message}`, 'error');
           }
         });
-        const leverageCell = el('td');
+        const leverageCell = el('td', { class: 'leverage-cell' });
         leverageCell.appendChild(leverageInput);
         row.appendChild(leverageCell);
+
+        const autopilotCheckbox = el('input', { type: 'checkbox', class: 'autopilot-toggle' });
+        autopilotCheckbox.checked = isAutoPilot;
+        autopilotCheckbox.title = '🚀 AI Full AutoPilot: automatically sets Strategy (AI Auto-Select), Timeframe (AI Auto-Timeframe), Trailing Stop (Live ATR), Adaptive TP, and Auto-Trading.';
+        autopilotCheckbox.addEventListener('change', async () => {
+          try {
+            await Api.setFuturesAutopilot(mode, asset.symbol, asset.exchange, autopilotCheckbox.checked);
+            toast(autopilotCheckbox.checked ? `🚀 AutoPilot activated for ${asset.symbol}!` : `AutoPilot deactivated for ${asset.symbol}.`, 'success');
+            await refreshWatchlist(mode);
+          } catch (err) {
+            autopilotCheckbox.checked = !autopilotCheckbox.checked;
+            toast(`Failed to update AutoPilot: ${err.message}`, 'error');
+          }
+        });
+        const autopilotCell = el('td', { class: 'autopilot-cell' });
+        const autopilotWrap = el('div', { class: 'autopilot-cell-wrap' });
+        autopilotWrap.appendChild(autopilotCheckbox);
+        if (isAutoPilot) {
+          autopilotWrap.appendChild(el('span', { class: 'autopilot-badge' }, 'AUTO'));
+        }
+        autopilotCell.appendChild(autopilotWrap);
+        row.appendChild(autopilotCell);
 
         const strategyCell = el('td');
         if (asset.strategy_mode === 'auto') {
           strategyCell.appendChild(buildAutoStrategySummary(asset));
         } else {
           const strategySelect = el('select');
+          if (isAutoPilot) strategySelect.disabled = true;
           strategiesCache.forEach((s) => {
             const opt = el('option', { value: s.id }, s.name || s.id);
             if (s.id === asset.strategy_id) opt.setAttribute('selected', 'selected');
@@ -640,12 +764,13 @@ const Futures = (() => {
         trailingInput.title = 'Trailing-stop % this asset\'s positions use by default (manual "Trade from Signal" and AI Auto-Trade). Leave blank to trade with a fixed stop-loss instead.';
         const trailingAutoCheckbox = el('input', { type: 'checkbox' });
         trailingAutoCheckbox.checked = asset.trailing_mode === 'atr';
-        trailingInput.disabled = trailingAutoCheckbox.checked;
+        trailingInput.disabled = trailingAutoCheckbox.checked || isAutoPilot;
+        trailingAutoCheckbox.disabled = isAutoPilot;
         trailingAutoCheckbox.title = 'Auto: compute the trailing distance from live volatility (ATR) each time a position opens, instead of a fixed %.';
 
         function revertTrailingUi() {
           trailingAutoCheckbox.checked = asset.trailing_mode === 'atr';
-          trailingInput.disabled = trailingAutoCheckbox.checked;
+          trailingInput.disabled = trailingAutoCheckbox.checked || isAutoPilot;
           trailingInput.value = asset.trailing_percent != null ? String(asset.trailing_percent) : '';
         }
 
@@ -676,13 +801,16 @@ const Futures = (() => {
           }
         });
         const trailingCell = el('td', { class: 'trailing-cell' });
-        trailingCell.appendChild(trailingInput);
-        trailingCell.appendChild(trailingAutoCheckbox);
-        trailingCell.appendChild(el('span', { class: 'trailing-auto-label' }, ' auto'));
+        const trailingWrap = el('div', { class: 'trailing-cell-wrap' });
+        trailingWrap.appendChild(trailingInput);
+        trailingWrap.appendChild(trailingAutoCheckbox);
+        trailingWrap.appendChild(el('span', { class: 'trailing-auto-label' }, ' auto'));
+        trailingCell.appendChild(trailingWrap);
         row.appendChild(trailingCell);
 
         const autoSelectCheckbox = el('input', { type: 'checkbox' });
         autoSelectCheckbox.checked = asset.strategy_mode === 'auto';
+        autoSelectCheckbox.disabled = isAutoPilot;
         autoSelectCheckbox.title = 'Let the AI pick 2-3 strategies for this asset by backtested win rate, trading only when a majority agree, instead of the single Strategy above.';
         autoSelectCheckbox.addEventListener('change', async () => {
           try {
@@ -700,6 +828,7 @@ const Futures = (() => {
 
         const autoTradeCheckbox = el('input', { type: 'checkbox' });
         autoTradeCheckbox.checked = !!asset.auto_trade_enabled;
+        autoTradeCheckbox.disabled = isAutoPilot;
         if (mode === 'real') {
           autoTradeCheckbox.title = 'Also requires ENABLE_FUTURES_AUTO_TRADING=true on the server (a restart-only .env setting) — this checkbox alone does not enable real autonomous trading.';
         }
@@ -718,6 +847,7 @@ const Futures = (() => {
 
         const adaptiveTpCheckbox = el('input', { type: 'checkbox' });
         adaptiveTpCheckbox.checked = !!asset.adaptive_tp_enabled;
+        adaptiveTpCheckbox.disabled = isAutoPilot;
         adaptiveTpCheckbox.title = 'Adaptive Take-Profit: staged partial exits (TP1/TP2/TP3) sized by ATR/market structure, with trailing that only starts after TP1 fires — instead of one fixed take-profit. Only affects positions opened after this is enabled.';
         adaptiveTpCheckbox.addEventListener('change', async () => {
           try {
@@ -814,6 +944,38 @@ const Futures = (() => {
     }
   }
 
+  async function enableAutoPilotForAll() {
+    const assets = watchlistCache.demo;
+    if (assets.length === 0) {
+      toast('Your Demo Futures Signals Setting is empty — add a symbol first.', 'error');
+      return;
+    }
+    const btn = document.getElementById('futures-demo-enable-all-autopilot-btn');
+    if (btn) btn.disabled = true;
+    let succeeded = 0;
+    const failures = [];
+    for (let i = 0; i < assets.length; i++) {
+      const asset = assets[i];
+      if (btn) btn.textContent = `Enabling... (${i + 1}/${assets.length})`;
+      try {
+        await Api.setFuturesAutopilot('demo', asset.symbol, asset.exchange, true);
+        succeeded += 1;
+      } catch (err) {
+        failures.push(`${asset.symbol}: ${err.message}`);
+      }
+    }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '🚀 Enable AutoPilot for All';
+    }
+    await refreshWatchlist('demo');
+    if (failures.length === 0) {
+      toast(`🚀 Demo AI Full AutoPilot enabled for all ${succeeded} Demo Futures symbol(s).`, 'success');
+    } else {
+      toast(`Enabled ${succeeded}/${assets.length}. Failed: ${failures.join('; ')}`, 'error');
+    }
+  }
+
   // ---------- real-unlock visibility ----------
 
   // Real Futures now spans two tabs: the Real Trading tab (4 cards: portfolio/P&L/order
@@ -871,6 +1033,7 @@ const Futures = (() => {
     document.getElementById('futures-add-demo-watchlist-btn').addEventListener('click', () => addCurrentSymbolToWatchlist('demo'));
     document.getElementById('futures-add-real-watchlist-btn').addEventListener('click', () => addCurrentSymbolToWatchlist('real'));
     document.getElementById('futures-demo-enable-all-autotrade-btn').addEventListener('click', enableAutoTradeForAll);
+    document.getElementById('futures-demo-enable-all-autopilot-btn')?.addEventListener('click', enableAutoPilotForAll);
 
     initOrderForm('demo', 'futures-demo-order-form');
     initOrderForm('real', 'futures-real-order-form');

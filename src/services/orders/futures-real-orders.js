@@ -13,6 +13,7 @@ const realAuditLogRepository = require('../../database/repositories/real-audit-l
 const exchangeClientFactory = require('../exchanges/exchange-client-factory');
 const { resolveRealCredentials } = require('../exchanges/real-credentials-resolver');
 const logger = require('../logging/logger');
+const protectionsService = require('../risk/protections-service');
 const { validateTrade } = require('../risk/validate-trade');
 const { isStopLossSafeFromLiquidation } = require('./liquidation-estimate');
 
@@ -137,6 +138,18 @@ async function placeRealFuturesOrder({ userId, symbol, exchange = 'kucoin', acti
 
   if (action === 'close') {
     return closeRealFuturesPosition({ id, userId, symbol, exchange, price, idempotencyKey, signalId, source, reason });
+  }
+
+  // Check protection cooldown (Freqtrade-style StoplossGuard / Reversal cooldown)
+  const cooldown = protectionsService.isCooldownActive(symbol, MODE);
+  if (['open_long', 'open_short'].includes(action) && cooldown.active) {
+    logger.warn('futures-real-orders', `Order rejected for ${symbol}: PROTECTION_COOLDOWN_ACTIVE (${cooldown.remainingMinutes}m remaining)`);
+    return persistRejected({
+      id, userId, symbol, exchange, action, leverage, stopLoss, takeProfit, price,
+      reasonCode: 'PROTECTION_COOLDOWN_ACTIVE',
+      message: `Real futures trading is halted for ${symbol} by protection cooldown (${cooldown.remainingMinutes}m remaining).`,
+      idempotencyKey, signalId, source,
+    });
   }
 
   // open_long / open_short

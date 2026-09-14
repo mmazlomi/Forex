@@ -34,5 +34,6 @@ router.use('/risk-settings', riskSettingsRouter);
 router.use('/emergency-stop', emergencyStopRouter);
 router.use('/logs', logsRouter);
 router.use('/system-status', systemStatusRouter);
+router.use('/notifications', require('./notification-routes'));
 
 module.exports = router;

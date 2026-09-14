@@ -125,6 +125,65 @@ function scoreVolume(volumeAnalysis, sma, price, weight) {
   };
 }
 
+function scoreSuperTrend(supertrend, price, weight) {
+  if (!supertrend || supertrend.status !== 'ok' || weight <= 0) return null;
+  const { direction, value } = supertrend;
+  if (direction === 'up' && price >= value) {
+    return { score: 0.6, weight, reason: `SuperTrend (${value}) is bullish (price above band) → uptrend continuation` };
+  }
+  if (direction === 'down' && price <= value) {
+    return { score: -0.6, weight, reason: `SuperTrend (${value}) is bearish (price below band) → downtrend continuation` };
+  }
+  return { score: 0, weight, reason: 'SuperTrend is crossing / transitioning' };
+}
+
+function scoreFairValueGap(fvg, price, weight) {
+  if (!fvg || fvg.status !== 'ok' || weight <= 0) return null;
+  const { nearestBullishFvg, nearestBearishFvg } = fvg;
+
+  if (nearestBullishFvg) {
+    // Price retesting unmitigated bullish FVG
+    const distToMid = Math.abs(price - nearestBullishFvg.midpoint) / price;
+    if (distToMid <= 0.015) {
+      return { score: 0.55, weight, reason: `Price within ${(distToMid * 100).toFixed(2)}% of unmitigated Bullish FVG [${nearestBullishFvg.bottom.toFixed(2)} - ${nearestBullishFvg.top.toFixed(2)}] → institutional retest` };
+    }
+  }
+
+  if (nearestBearishFvg) {
+    // Price retesting unmitigated bearish FVG
+    const distToMid = Math.abs(price - nearestBearishFvg.midpoint) / price;
+    if (distToMid <= 0.015) {
+      return { score: -0.55, weight, reason: `Price within ${(distToMid * 100).toFixed(2)}% of unmitigated Bearish FVG [${nearestBearishFvg.bottom.toFixed(2)} - ${nearestBearishFvg.top.toFixed(2)}] → institutional retest` };
+    }
+  }
+
+  return null;
+}
+
+function scoreVolumeProfile(vp, price, weight) {
+  if (!vp || vp.status !== 'ok' || weight <= 0) return null;
+  const { vpoc, vah, val, isInsideValueArea } = vp;
+
+  // Near VPOC (Point of Control)
+  if (vpoc) {
+    const distToPoc = Math.abs(price - vpoc) / price;
+    if (distToPoc <= 0.008) {
+      const bias = price >= vpoc ? 0.35 : -0.35;
+      return { score: bias, weight, reason: `Price at VPOC (${vpoc}) high-volume magnet level` };
+    }
+  }
+
+  // At Value Area Extremes (reversal bounce zones)
+  if (val && (price - val) / price <= 0.008 && price >= val * 0.99) {
+    return { score: 0.45, weight, reason: `Price at Value Area Low (VAL: ${val}) → strong support demand zone` };
+  }
+  if (vah && (vah - price) / price <= 0.008 && price <= vah * 1.01) {
+    return { score: -0.45, weight, reason: `Price at Value Area High (VAH: ${vah}) → strong resistance supply zone` };
+  }
+
+  return null;
+}
+
 /**
  * Combines all indicator sub-scores into a single technicalScore in [-1, +1], the list of
  * contributing reasons, and a summary. Returns technicalScore: null if no indicator had
@@ -143,6 +202,9 @@ function computeTechnicalScore(indicators, price, indicatorWeights = {}) {
     scoreIchimoku(indicators.ichimoku, price, w.ichimoku),
     scoreSupportResistance(indicators.supportResistance, price, w.supportResistance),
     scoreVolume(indicators.volumeAnalysis, indicators.sma, price, w.volumeAnalysis),
+    indicators.supertrend ? scoreSuperTrend(indicators.supertrend, price, w.supertrend ?? 0) : null,
+    indicators.fairValueGap ? scoreFairValueGap(indicators.fairValueGap, price, w.fairValueGap ?? 0) : null,
+    indicators.volumeProfile ? scoreVolumeProfile(indicators.volumeProfile, price, w.volumeProfile ?? 0) : null,
   ].filter(Boolean);
 
   if (contributions.length === 0) {
@@ -158,12 +220,14 @@ function computeTechnicalScore(indicators, price, indicatorWeights = {}) {
     reasons: contributions.map((c) => c.reason),
     summary: {
       contributingIndicators: contributions.length,
-      rsi: indicators.rsi.status === 'ok' ? indicators.rsi.value : null,
-      macd: indicators.macd.status === 'ok' ? indicators.macd.value : null,
-      adx: indicators.adx.status === 'ok' ? indicators.adx.value.adx : null,
-      volume: indicators.volumeAnalysis.status === 'ok' ? indicators.volumeAnalysis.value : null,
+      rsi: indicators.rsi?.status === 'ok' ? indicators.rsi.value : null,
+      macd: indicators.macd?.status === 'ok' ? indicators.macd.value : null,
+      adx: indicators.adx?.status === 'ok' ? indicators.adx.value.adx : null,
+      volume: indicators.volumeAnalysis?.status === 'ok' ? indicators.volumeAnalysis.value : null,
+      supertrend: indicators.supertrend?.status === 'ok' ? indicators.supertrend.direction : null,
     },
   };
 }
 
 module.exports = { computeTechnicalScore, DEFAULT_WEIGHTS };
+

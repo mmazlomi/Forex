@@ -21,10 +21,21 @@
 
   // ---------- small DOM helpers ----------
 
-  function el(tag, attrs = {}, text) {
+  function el(tag, attrs = {}, ...children) {
     const node = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
-    if (text !== undefined) node.textContent = text;
+    if (children.length === 1 && (typeof children[0] === 'string' || typeof children[0] === 'number')) {
+      node.textContent = String(children[0]);
+    } else {
+      for (const child of children) {
+        if (child == null) continue;
+        if (child instanceof Node) {
+          node.appendChild(child);
+        } else {
+          node.appendChild(document.createTextNode(String(child)));
+        }
+      }
+    }
     return node;
   }
 
@@ -144,6 +155,7 @@
       if (ModeSwitcher.isRealUnlocked()) Futures.refreshPortfolio('real');
     }
     if (tabName === 'watchlist') { refreshSpotWatchlist(); Futures.refreshBothWatchlists(); }
+    if (tabName === 'backtest') { loadAutoPilotMatrix(); }
     if (tabName === 'statistics') refreshStatistics();
     if (tabName === 'risk') { loadRiskSettings(ModeSwitcher.getMode()); loadFuturesRiskSettings(ModeSwitcher.getMode()); }
     if (tabName === 'system') { refreshSystemStatus(); refreshLogs(); }
@@ -242,11 +254,88 @@
     document.getElementById('symbol-suggestions-list').hidden = true;
   }
 
+  const POPULAR_MAJORS = [
+    'BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'ADA', 'AVAX', 'LINK', 'SUI',
+    'PEPE', 'NEAR', 'DOT', 'LTC', 'BCH', 'SHIB', 'TRX', 'UNI', 'APT', 'FET',
+    'RENDER', 'TAO', 'INJ', 'ATOM', 'FIL', 'ARB', 'OP', 'POL', 'XLM', 'KAS'
+  ];
+
+  function filterAndRankSymbols(symbols, filterText) {
+    const query = (filterText || '').trim().toUpperCase();
+
+    if (!query) {
+      // Empty input: prioritize top major cryptocurrencies, then return the rest
+      const majors = [];
+      const others = [];
+      const seen = new Set();
+
+      for (const major of POPULAR_MAJORS) {
+        for (const s of symbols) {
+          const base = s.split('/')[0].toUpperCase();
+          if (base === major && !seen.has(s)) {
+            majors.push(s);
+            seen.add(s);
+          }
+        }
+      }
+
+      for (const s of symbols) {
+        if (!seen.has(s)) {
+          others.push(s);
+        }
+      }
+      return majors.concat(others).slice(0, 30);
+    }
+
+    // Query provided: multi-tier relevance ranking
+    // Tier 1: Base currency exactly matches query (e.g. "SOL" -> "SOL/USDT")
+    // Tier 2: Base currency starts with query (e.g. "S" -> "SOL/USDT", "SUI/USDT", "SHIB/USDT")
+    // Tier 3: Base currency contains query (e.g. "OL" -> "SOL/USDT")
+    // Tier 4: Pair contains query anywhere (e.g. quote currency or slash matches "USDC")
+    const tier1 = [];
+    const tier2 = [];
+    const tier3 = [];
+    const tier4 = [];
+
+    for (const s of symbols) {
+      const upper = s.toUpperCase();
+      const base = (upper.split('/')[0] || '').trim();
+
+      if (base === query) {
+        tier1.push(s);
+      } else if (base.startsWith(query)) {
+        tier2.push(s);
+      } else if (base.includes(query)) {
+        tier3.push(s);
+      } else if (upper.includes(query)) {
+        tier4.push(s);
+      }
+    }
+
+    // Within Tier 2 and Tier 3, prioritize popular coins
+    const rankWithMajors = (list) => {
+      return list.sort((a, b) => {
+        const baseA = a.split('/')[0].toUpperCase();
+        const baseB = b.split('/')[0].toUpperCase();
+        const idxA = POPULAR_MAJORS.indexOf(baseA);
+        const idxB = POPULAR_MAJORS.indexOf(baseB);
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        return a.localeCompare(b);
+      });
+    };
+
+    const sortedTier2 = rankWithMajors(tier2);
+    const sortedTier3 = rankWithMajors(tier3);
+
+    return [...tier1, ...sortedTier2, ...sortedTier3, ...tier4].slice(0, 30);
+  }
+
   function showSymbolSuggestions(filterText) {
     const list = document.getElementById('symbol-suggestions-list');
     clear(list);
-    const query = (filterText || '').trim().toUpperCase();
-    const matches = (query ? symbolSuggestionsCache.filter((s) => s.toUpperCase().includes(query)) : symbolSuggestionsCache).slice(0, 25);
+    const matches = filterAndRankSymbols(symbolSuggestionsCache, filterText);
     if (matches.length === 0) {
       hideSymbolSuggestions();
       return;
@@ -254,6 +343,7 @@
     matches.forEach((symbol) => list.appendChild(el('li', {}, symbol)));
     list.hidden = false;
   }
+
 
   // ---------- WatchList tab (lightweight tracking list, separate from Signals Setting below) ----------
 
@@ -439,7 +529,11 @@
         });
         const exchangeCell = el('td');
         exchangeCell.appendChild(exchangeSelect);
-        row.append(exchangeCell, el('td', {}, asset.asset_type));
+        row.appendChild(exchangeCell);
+        row.appendChild(el('td', {}, asset.asset_type || '-'));
+
+        const isAutoPilot = !!asset.autopilot_enabled;
+        const isAutoTimeframe = isAutoPilot || asset.timeframe_mode === 'auto';
 
         const timeframeSelect = el('select');
         TIMEFRAME_OPTIONS.forEach((tf) => {
@@ -447,6 +541,7 @@
           if (tf === (asset.default_timeframe || '1h')) opt.setAttribute('selected', 'selected');
           timeframeSelect.appendChild(opt);
         });
+        timeframeSelect.disabled = isAutoTimeframe;
         timeframeSelect.title = 'Also used by AI Auto-Trade — changing it changes which candle timeframe the auto-trader analyzes for this asset.';
         timeframeSelect.addEventListener('change', async () => {
           try {
@@ -456,19 +551,67 @@
             toast(`Failed to update timeframe: ${err.message}`, 'error');
           }
         });
-        const timeframeCell = el('td');
+
+        const timeframeAutoCheckbox = el('input', { type: 'checkbox' });
+        timeframeAutoCheckbox.checked = isAutoTimeframe;
+        timeframeAutoCheckbox.disabled = isAutoPilot;
+        timeframeAutoCheckbox.title = isAutoPilot
+          ? '🚀 AI Full AutoPilot automatically selects the optimal timeframe'
+          : 'Auto: let AI periodically evaluate and pick the highest win-rate timeframe (15m, 1h, 4h)';
+
+        timeframeAutoCheckbox.addEventListener('change', async () => {
+          const useAuto = timeframeAutoCheckbox.checked;
+          try {
+            await Api.setAssetTimeframeMode(asset.symbol, asset.exchange, useAuto ? 'auto' : 'manual');
+            asset.timeframe_mode = useAuto ? 'auto' : 'manual';
+            timeframeSelect.disabled = useAuto;
+            toast(useAuto ? `Auto-timeframe enabled for ${asset.symbol}.` : `Manual timeframe set for ${asset.symbol}.`, 'success');
+          } catch (err) {
+            timeframeAutoCheckbox.checked = !useAuto;
+            toast(`Failed to update timeframe mode: ${err.message}`, 'error');
+          }
+        });
+
+        const timeframeCell = el('td', { class: 'timeframe-cell' });
         if (asset.strategy_id === LSR_STRATEGY_ID) {
           timeframeCell.appendChild(buildLsrTimeframeCell(asset, (mode) => Api.setAssetLsrTimeframeMode(asset.symbol, asset.exchange, mode)));
         } else {
-          timeframeCell.appendChild(timeframeSelect);
+          const timeframeWrap = el('div', { class: 'timeframe-cell-wrap' });
+          timeframeWrap.appendChild(timeframeSelect);
+          timeframeWrap.appendChild(timeframeAutoCheckbox);
+          timeframeWrap.appendChild(el('span', { class: 'timeframe-auto-label' }, ' auto'));
+          timeframeCell.appendChild(timeframeWrap);
         }
         row.appendChild(timeframeCell);
+
+        const autopilotCheckbox = el('input', { type: 'checkbox', class: 'autopilot-toggle' });
+        autopilotCheckbox.checked = isAutoPilot;
+        autopilotCheckbox.title = '🚀 AI Full AutoPilot: automatically sets Strategy (AI Auto-Select), Timeframe (AI Auto-Timeframe), Trailing Stop (Live ATR), Adaptive TP, and Auto-Trading.';
+        autopilotCheckbox.addEventListener('change', async () => {
+          try {
+            await Api.setAssetAutopilot(asset.symbol, asset.exchange, autopilotCheckbox.checked);
+            toast(autopilotCheckbox.checked ? `🚀 AutoPilot activated for ${asset.symbol}!` : `AutoPilot deactivated for ${asset.symbol}.`, 'success');
+            await refreshSpotWatchlist();
+          } catch (err) {
+            autopilotCheckbox.checked = !autopilotCheckbox.checked;
+            toast(`Failed to update AutoPilot: ${err.message}`, 'error');
+          }
+        });
+        const autopilotCell = el('td', { class: 'autopilot-cell' });
+        const autopilotWrap = el('div', { class: 'autopilot-cell-wrap' });
+        autopilotWrap.appendChild(autopilotCheckbox);
+        if (isAutoPilot) {
+          autopilotWrap.appendChild(el('span', { class: 'autopilot-badge' }, 'AUTO'));
+        }
+        autopilotCell.appendChild(autopilotWrap);
+        row.appendChild(autopilotCell);
 
         const strategyCell = el('td');
         if (asset.strategy_mode === 'auto') {
           strategyCell.appendChild(buildAutoStrategySummary(asset));
         } else {
           const strategySelect = el('select');
+          if (isAutoPilot) strategySelect.disabled = true;
           strategiesCache.forEach((s) => {
             const opt = el('option', { value: s.id }, s.name || s.id);
             if (s.id === asset.strategy_id) opt.setAttribute('selected', 'selected');
@@ -496,12 +639,13 @@
         trailingInput.title = 'Trailing-stop % this asset\'s positions use by default (manual "Trade from Signal" and AI Auto-Trade). Leave blank to trade with a fixed stop-loss instead.';
         const trailingAutoCheckbox = el('input', { type: 'checkbox' });
         trailingAutoCheckbox.checked = asset.trailing_mode === 'atr';
-        trailingInput.disabled = trailingAutoCheckbox.checked;
+        trailingInput.disabled = trailingAutoCheckbox.checked || isAutoPilot;
+        trailingAutoCheckbox.disabled = isAutoPilot;
         trailingAutoCheckbox.title = 'Auto: compute the trailing distance from live volatility (ATR) each time a position opens, instead of a fixed %.';
 
         function revertTrailingUi() {
           trailingAutoCheckbox.checked = asset.trailing_mode === 'atr';
-          trailingInput.disabled = trailingAutoCheckbox.checked;
+          trailingInput.disabled = trailingAutoCheckbox.checked || isAutoPilot;
           trailingInput.value = asset.trailing_percent != null ? String(asset.trailing_percent) : '';
         }
 
@@ -532,13 +676,16 @@
           }
         });
         const trailingCell = el('td', { class: 'trailing-cell' });
-        trailingCell.appendChild(trailingInput);
-        trailingCell.appendChild(trailingAutoCheckbox);
-        trailingCell.appendChild(el('span', { class: 'trailing-auto-label' }, ' auto'));
+        const trailingWrap = el('div', { class: 'trailing-cell-wrap' });
+        trailingWrap.appendChild(trailingInput);
+        trailingWrap.appendChild(trailingAutoCheckbox);
+        trailingWrap.appendChild(el('span', { class: 'trailing-auto-label' }, ' auto'));
+        trailingCell.appendChild(trailingWrap);
         row.appendChild(trailingCell);
 
         const autoSelectCheckbox = el('input', { type: 'checkbox' });
         autoSelectCheckbox.checked = asset.strategy_mode === 'auto';
+        autoSelectCheckbox.disabled = isAutoPilot;
         autoSelectCheckbox.title = 'Let the AI pick 2-3 strategies for this asset by backtested win rate, trading only when a majority agree, instead of the single Strategy above.';
         autoSelectCheckbox.addEventListener('change', async () => {
           try {
@@ -556,6 +703,7 @@
 
         const autoTradeCheckbox = el('input', { type: 'checkbox' });
         autoTradeCheckbox.checked = !!asset.auto_trade_enabled;
+        autoTradeCheckbox.disabled = isAutoPilot;
         autoTradeCheckbox.addEventListener('change', async () => {
           try {
             await Api.setAutoTrade(asset.symbol, asset.exchange, autoTradeCheckbox.checked);
@@ -591,6 +739,7 @@
 
         const adaptiveTpCheckbox = el('input', { type: 'checkbox' });
         adaptiveTpCheckbox.checked = !!asset.adaptive_tp_enabled;
+        adaptiveTpCheckbox.disabled = isAutoPilot;
         adaptiveTpCheckbox.title = 'Adaptive Take-Profit: staged partial exits (TP1/TP2/TP3) sized by ATR/market structure, with trailing that only starts after TP1 fires — instead of one fixed take-profit. Only affects positions opened after this is enabled.';
         adaptiveTpCheckbox.addEventListener('change', async () => {
           try {
@@ -689,6 +838,37 @@
     }
   }
 
+  async function enableAutoPilotForAll() {
+    if (watchlistCache.length === 0) {
+      toast('Your Signals Setting is empty — add an asset first.', 'error');
+      return;
+    }
+    const btn = document.getElementById('enable-all-autopilot-btn');
+    if (btn) btn.disabled = true;
+    let succeeded = 0;
+    const failures = [];
+    for (let i = 0; i < watchlistCache.length; i++) {
+      const asset = watchlistCache[i];
+      if (btn) btn.textContent = `Enabling... (${i + 1}/${watchlistCache.length})`;
+      try {
+        await Api.setAssetAutopilot(asset.symbol, asset.exchange, true);
+        succeeded += 1;
+      } catch (err) {
+        failures.push(`${asset.symbol}@${asset.exchange}: ${err.message}`);
+      }
+    }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '🚀 Enable AutoPilot for All';
+    }
+    await refreshSpotWatchlist();
+    if (failures.length === 0) {
+      toast(`🚀 AI Full AutoPilot enabled for all ${succeeded} Signals Setting asset(s).`, 'success');
+    } else {
+      toast(`AutoPilot enabled for ${succeeded}/${watchlistCache.length}. Failed: ${failures.join('; ')}`, 'error');
+    }
+  }
+
   async function loadMarketData() {
     const card = document.getElementById('price-card');
     try {
@@ -773,6 +953,7 @@
   }
 
   const INDICATOR_LABELS = {
+    marketRegime: 'Market Regime',
     sma: 'SMA(20)', ema: 'EMA(20)', rsi: 'RSI(14)', macd: 'MACD',
     bollingerBands: 'Bollinger Bands', atr: 'ATR(14)', stochastic: 'Stochastic',
     adx: 'ADX(14)', ichimoku: 'Ichimoku Cloud', supportResistance: 'Support / Resistance', volumeAnalysis: 'Volume',
@@ -780,6 +961,9 @@
 
   function formatIndicatorValue(key, indicator) {
     if (indicator.status !== 'ok') return `NO_DATA (${indicator.status})`;
+    if (key === 'marketRegime') {
+      return `🧭 ${indicator.regimeName || indicator.regime} (${indicator.description || ''})`;
+    }
     const v = indicator.value;
     if (typeof v === 'number') return fmt(v);
     if (key === 'macd') return `MACD ${fmt(v.macd)} / Signal ${fmt(v.signal)} / Hist ${fmt(v.histogram)}`;
@@ -888,7 +1072,7 @@
   // periodic backtest of a handful of candidate htf/signal/entry combos (mirrors the "🎯 Auto-
   // Select" strategy checkbox elsewhere in this table, but for timeframe instead of strategy).
   function buildLsrTimeframeCell(asset, apiSetMode) {
-    const cell = el('td', { class: 'lsr-timeframe-cell' });
+    const cell = el('div', { class: 'lsr-timeframe-cell-wrap' });
     const checkbox = el('input', { type: 'checkbox' });
     checkbox.checked = asset.lsr_timeframe_mode === 'auto';
     checkbox.title = 'Auto: periodically backtest a set of htf/signal/entry timeframe combinations for this LSR asset and use whichever ranks best, instead of the fixed 4h/15m/5m default.';
@@ -1639,15 +1823,48 @@
 
   // ---------- backtest ----------
 
+  const BACKTEST_AUTO_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes = 900,000 ms
+  let backtestAutoTimer = null;
+  let backtestCountdownInterval = null;
+  let nextBacktestRunTimestamp = 0;
+  let isBacktestAutoEnabled = true;
+  let isBacktestExecuting = false;
+
+  function formatExitReason(reason) {
+    const EXIT_LABELS = {
+      take_profit: '🎯 Take Profit',
+      stop_loss: '🛑 Stop Loss',
+      end_of_backtest: '⏱️ End of Window',
+      signal_change: '🔄 Signal Reversal',
+      trailing_stop: '📈 Trailing Stop',
+      adaptive_tp: '⚡ Adaptive TP',
+    };
+    return EXIT_LABELS[reason] || (reason ? reason.replace(/_/g, ' ') : '-');
+  }
+
   function renderBacktestResult(result) {
     const card = document.getElementById('backtest-results-card');
+    if (!card) return;
     card.hidden = false;
-    const m = result.metrics;
+    const m = result.metrics || {};
+    const trades = result.trades || [];
+    const wins = trades.filter((t) => (t.pnl || 0) > 0).length;
+    const losses = trades.filter((t) => (t.pnl || 0) < 0).length;
+    const breakevens = trades.filter((t) => (t.pnl || 0) === 0).length;
+
+    const bannerEl = document.getElementById('backtest-summary-banner');
+    if (bannerEl) {
+      const startStr = result.startUtc ? new Date(result.startUtc).toLocaleDateString() : '';
+      const endStr = result.endUtc ? new Date(result.endUtc).toLocaleDateString() : '';
+      bannerEl.textContent = `📊 ${result.symbol || currentAsset.symbol} @ ${result.exchange || currentAsset.exchange} (${result.timeframe || currentAsset.timeframe}) • Strategy: ${result.strategyName || result.strategyId || 'Default'} • Window: ${startStr} to ${endStr} • Capital: $${fmt(result.initialCapital || 10000)}`;
+    }
+
     renderStatList(document.getElementById('backtest-metrics'), [
       ['Final equity', fmt(m.finalEquity)],
       ['Total P&L', `${fmt(m.totalPnl)} (${fmt(m.totalPnlPercent, 2)}%)`],
       ['Max drawdown', `${fmt(m.maxDrawdownPercent, 2)}%`],
-      ['Trades', String(m.tradeCount)],
+      ['Total Trades', String(m.tradeCount ?? trades.length)],
+      ['Wins / Losses', `${wins}W / ${losses}L (${breakevens}BE)`],
       ['Win rate', `${fmt(m.winRatePercent, 1)}%`],
       ['Profit factor', fmt(m.profitFactor, 2)],
       ['Avg win', fmt(m.avgWin)],
@@ -1655,40 +1872,236 @@
     ]);
 
     if (!equityChart) equityChart = Charts.createLineChart('equity-chart');
-    if (equityChart) equityChart.setPoints(result.equityCurve);
+    if (equityChart && result.equityCurve) equityChart.setPoints(result.equityCurve);
 
     const warnEl = document.getElementById('backtest-warnings');
-    clear(warnEl);
-    (result.warnings || []).forEach((w) => warnEl.appendChild(el('p', { class: 'hint' }, w)));
+    if (warnEl) {
+      clear(warnEl);
+      (result.warnings || []).forEach((w) => warnEl.appendChild(el('p', { class: 'hint' }, w)));
+    }
+
+    // Render complete executed trades list
+    const tradesCountEl = document.getElementById('backtest-trades-count');
+    if (tradesCountEl) tradesCountEl.textContent = String(trades.length);
+
+    const tradesBody = document.getElementById('backtest-trades-body');
+    if (tradesBody) {
+      clear(tradesBody);
+      if (trades.length === 0) {
+        const emptyRow = el('tr');
+        emptyRow.appendChild(el('td', { colspan: '10', class: 'empty-state' }, 'No trades triggered during this backtest period.'));
+        tradesBody.appendChild(emptyRow);
+      } else {
+        trades.forEach((t, index) => {
+          const row = el('tr');
+          row.appendChild(el('td', { class: 'cmc-rank' }, String(index + 1)));
+          row.appendChild(el('td', {}, t.enteredAtUtc ? formatTimestamp(t.enteredAtUtc) : '-'));
+          row.appendChild(el('td', {}, t.exitedAtUtc ? formatTimestamp(t.exitedAtUtc) : '-'));
+
+          const sideCell = el('td');
+          const isBuy = (t.side || 'BUY').toUpperCase() === 'BUY';
+          const sideBadge = el('span', {
+            class: 'badge',
+            style: isBuy
+              ? 'background: rgba(34, 197, 94, 0.15); color: #22c55e; border-color: rgba(34, 197, 94, 0.4); font-weight: 700;'
+              : 'background: rgba(239, 68, 68, 0.15); color: #ef4444; border-color: rgba(239, 68, 68, 0.4); font-weight: 700;'
+          }, t.side || 'BUY');
+          sideCell.appendChild(sideBadge);
+          row.appendChild(sideCell);
+
+          row.appendChild(el('td', {}, fmt(t.qty, 4)));
+          row.appendChild(el('td', {}, fmtPrice(t.entryPrice)));
+          row.appendChild(el('td', {}, fmtPrice(t.exitPrice)));
+
+          const pnlVal = t.pnl || 0;
+          const pnlCell = el('td', {
+            class: pnlVal > 0 ? 'text-positive' : pnlVal < 0 ? 'text-negative' : ''
+          }, `${pnlVal >= 0 ? '+' : ''}${fmt(pnlVal, 2)}`);
+          row.appendChild(pnlCell);
+
+          const pnlPercent = t.entryPrice ? ((t.exitPrice - t.entryPrice) / t.entryPrice * 100 * (t.side === 'SELL' ? -1 : 1)) : 0;
+          const pnlPctCell = el('td', {
+            class: pnlPercent > 0 ? 'text-positive' : pnlPercent < 0 ? 'text-negative' : ''
+          }, `${pnlPercent >= 0 ? '+' : ''}${fmt(pnlPercent, 2)}%`);
+          row.appendChild(pnlPctCell);
+
+          row.appendChild(el('td', {}, formatExitReason(t.exitReason)));
+          tradesBody.appendChild(row);
+        });
+      }
+    }
+  }
+
+  async function executeBacktest({ isAuto = false } = {}) {
+    if (isBacktestExecuting) return;
+    const form = document.getElementById('backtest-form');
+    if (!form) return;
+
+    ensureBacktestFormDefaults(form);
+
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const runNowBtn = document.getElementById('backtest-run-now-btn');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Running...';
+    }
+    if (runNowBtn) {
+      runNowBtn.disabled = true;
+      runNowBtn.textContent = 'Running...';
+    }
+    isBacktestExecuting = true;
+
+    try {
+      const result = await Api.runBacktest({
+        symbol: currentAsset.symbol,
+        exchange: currentAsset.exchange,
+        timeframe: currentAsset.timeframe,
+        start: new Date(form.start.value).toISOString(),
+        end: new Date(form.end.value).toISOString(),
+        initialCapital: Number(form.initialCapital.value) || 10000,
+        feePercent: Number(form.feePercent.value) || 0.1,
+        slippagePercent: Number(form.slippagePercent.value) || 0.05,
+        strategyId: form.strategyId.value || 'balanced',
+        scoringConfig: pendingBacktestScoringConfig || undefined,
+      });
+
+      renderBacktestResult(result);
+      const timeStr = new Date().toLocaleTimeString('en-GB');
+      const lastRunEl = document.getElementById('backtest-last-run-info');
+      if (lastRunEl) {
+        lastRunEl.textContent = `Last execution: ${timeStr} (${result.symbol} • ${result.trades?.length || 0} trades evaluated)`;
+      }
+
+      if (isAuto) {
+        toast(`Backtest 15m cycle updated for ${result.symbol}.`, 'success');
+      } else {
+        toast('Backtest completed.', 'success');
+      }
+    } catch (err) {
+      toast(`Backtest failed: ${err.message}`, 'error');
+    } finally {
+      isBacktestExecuting = false;
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Run Backtest';
+      }
+      if (runNowBtn) {
+        runNowBtn.disabled = false;
+        runNowBtn.textContent = '🔄 Run Now';
+      }
+      pendingBacktestScoringConfig = null;
+      const appliedHint = document.getElementById('backtest-applied-hint');
+      if (appliedHint) appliedHint.textContent = '';
+      resetBacktestTimer();
+    }
+  }
+
+  function ensureBacktestFormDefaults(form) {
+    if (!form) return;
+    const today = new Date();
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    if (!form.end.value) form.end.value = today.toISOString().split('T')[0];
+    if (!form.start.value) form.start.value = thirtyDaysAgo.toISOString().split('T')[0];
+  }
+
+  function resetBacktestTimer() {
+    nextBacktestRunTimestamp = Date.now() + BACKTEST_AUTO_INTERVAL_MS;
+    if (backtestAutoTimer) clearTimeout(backtestAutoTimer);
+    if (isBacktestAutoEnabled) {
+      backtestAutoTimer = setTimeout(() => {
+        executeBacktest({ isAuto: true });
+      }, BACKTEST_AUTO_INTERVAL_MS);
+    }
+    updateBacktestCountdown();
+  }
+
+  function updateBacktestCountdown() {
+    const countdownEl = document.getElementById('backtest-countdown-display');
+    if (!isBacktestAutoEnabled) {
+      if (countdownEl) countdownEl.textContent = 'Paused';
+      return;
+    }
+    const remainingMs = Math.max(0, nextBacktestRunTimestamp - Date.now());
+    const totalSecs = Math.floor(remainingMs / 1000);
+    const mins = Math.floor(totalSecs / 60);
+    const secs = totalSecs % 60;
+    const formatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    if (countdownEl) countdownEl.textContent = formatted;
+  }
+
+  function setupBacktestAutoRunner() {
+    const toggleBtn = document.getElementById('backtest-auto-toggle-btn');
+    const runNowBtn = document.getElementById('backtest-run-now-btn');
+    const stateText = document.getElementById('backtest-auto-state-text');
+
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        isBacktestAutoEnabled = !isBacktestAutoEnabled;
+        if (isBacktestAutoEnabled) {
+          toggleBtn.textContent = '⏸️ Pause';
+          if (stateText) {
+            stateText.textContent = 'Active';
+            stateText.style.color = '#10b981';
+          }
+          resetBacktestTimer();
+          toast('15-minute Backtest auto-refresh resumed.', 'success');
+        } else {
+          toggleBtn.textContent = '▶️ Resume';
+          if (stateText) {
+            stateText.textContent = 'Paused';
+            stateText.style.color = '#f59e0b';
+          }
+          if (backtestAutoTimer) clearTimeout(backtestAutoTimer);
+          updateBacktestCountdown();
+          toast('15-minute Backtest auto-refresh paused.', 'info');
+        }
+      });
+    }
+
+    if (runNowBtn) {
+      runNowBtn.addEventListener('click', () => {
+        executeBacktest({ isAuto: false });
+      });
+    }
+
+    if (backtestCountdownInterval) clearInterval(backtestCountdownInterval);
+    backtestCountdownInterval = setInterval(updateBacktestCountdown, 1000);
+
+    resetBacktestTimer();
+
+    // Auto-run or load initial backtest so Backtest tab is immediately populated
+    setTimeout(async () => {
+      try {
+        const recentRuns = await Api.listBacktests(1);
+        if (recentRuns && recentRuns.length > 0) {
+          const latestRun = await Api.getBacktest(recentRuns[0].id);
+          if (latestRun) {
+            renderBacktestResult(latestRun);
+            const lastRunEl = document.getElementById('backtest-last-run-info');
+            if (lastRunEl && latestRun.created_at_utc) {
+              lastRunEl.textContent = `Last execution: ${formatTimestamp(latestRun.created_at_utc)} (${latestRun.symbol} • ${latestRun.trades?.length || 0} trades evaluated)`;
+            }
+          }
+        } else {
+          executeBacktest({ isAuto: true });
+        }
+      } catch {
+        executeBacktest({ isAuto: true });
+      }
+    }, 2000);
   }
 
   function initBacktestForm() {
-    document.getElementById('backtest-form').addEventListener('submit', async (e) => {
+    const form = document.getElementById('backtest-form');
+    if (!form) return;
+    ensureBacktestFormDefaults(form);
+
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const form = e.target;
-      const submitBtn = form.querySelector('button[type="submit"]');
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Running...';
-      try {
-        const result = await Api.runBacktest({
-          symbol: currentAsset.symbol, exchange: currentAsset.exchange, timeframe: currentAsset.timeframe,
-          start: new Date(form.start.value).toISOString(), end: new Date(form.end.value).toISOString(),
-          initialCapital: Number(form.initialCapital.value), feePercent: Number(form.feePercent.value),
-          slippagePercent: Number(form.slippagePercent.value),
-          strategyId: form.strategyId.value,
-          scoringConfig: pendingBacktestScoringConfig || undefined,
-        });
-        renderBacktestResult(result);
-        toast('Backtest completed.', 'success');
-      } catch (err) {
-        toast(`Backtest failed: ${err.message}`, 'error');
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Run Backtest';
-        pendingBacktestScoringConfig = null;
-        document.getElementById('backtest-applied-hint').textContent = '';
-      }
+      await executeBacktest({ isAuto: false });
     });
+
+    setupBacktestAutoRunner();
   }
 
   // ---------- strategy optimizer (hyperopt-lite) ----------
@@ -1762,6 +2175,434 @@
     });
   }
 
+  // ---------- AutoPilot Multi-Asset Backtest Matrix ----------
+
+  let cachedMatrixAssets = [];
+  let matrixActiveFilter = 'all';
+  let matrixSearchQuery = '';
+
+  function getStrategyDisplayName(id) {
+    const s = (strategiesCache || []).find((x) => x.id === id);
+    if (s && s.name) return s.name;
+    return id ? id.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') : '-';
+  }
+
+  function updateAutoPilotKpis(assets) {
+    const totalEl = document.getElementById('autopilot-kpi-total');
+    const activeEl = document.getElementById('autopilot-kpi-active');
+    const evaluatedEl = document.getElementById('autopilot-kpi-evaluated');
+    const winrateEl = document.getElementById('autopilot-kpi-winrate');
+
+    if (totalEl) totalEl.textContent = String(assets.length);
+    if (activeEl) {
+      const activeCount = assets.filter((a) => a.autopilotEnabled || a.strategyMode === 'auto').length;
+      activeEl.textContent = String(activeCount);
+    }
+    if (evaluatedEl) {
+      const evalCount = assets.filter((a) => a.evaluated).length;
+      evaluatedEl.textContent = String(evalCount);
+    }
+    if (winrateEl) {
+      const wrs = assets
+        .map((a) => a.metrics?.compositeWinRatePercent)
+        .filter((w) => typeof w === 'number' && Number.isFinite(w));
+      if (wrs.length > 0) {
+        const avg = wrs.reduce((sum, val) => sum + val, 0) / wrs.length;
+        winrateEl.textContent = `${fmt(avg, 1)}%`;
+      } else {
+        winrateEl.textContent = '-';
+      }
+    }
+
+    const countAll = document.getElementById('filter-count-all');
+    const countSpot = document.getElementById('filter-count-spot');
+    const countDemo = document.getElementById('filter-count-demo');
+    const countReal = document.getElementById('filter-count-real');
+    if (countAll) countAll.textContent = String(assets.length);
+    if (countSpot) countSpot.textContent = String(assets.filter((a) => a.market === 'spot').length);
+    if (countDemo) countDemo.textContent = String(assets.filter((a) => a.market === 'futures-demo').length);
+    if (countReal) countReal.textContent = String(assets.filter((a) => a.market === 'futures-real').length);
+  }
+
+  function renderAutoPilotMatrixRows() {
+    const tbody = document.getElementById('autopilot-matrix-tbody');
+    if (!tbody) return;
+
+    clear(tbody);
+
+    let list = cachedMatrixAssets;
+    if (matrixActiveFilter !== 'all') {
+      list = list.filter((a) => a.market === matrixActiveFilter);
+    }
+    if (matrixSearchQuery.trim()) {
+      const q = matrixSearchQuery.trim().toLowerCase();
+      list = list.filter((a) => a.symbol.toLowerCase().includes(q) || a.exchange.toLowerCase().includes(q));
+    }
+
+    if (list.length === 0) {
+      const emptyRow = el('tr', {},
+        el('td', { colspan: '11', style: 'text-align: center; color: var(--color-text-dim); padding: 1.5rem;' },
+          'No matching assets found for current filter/search.'
+        )
+      );
+      tbody.appendChild(emptyRow);
+      return;
+    }
+
+    list.forEach((asset) => {
+      const row = el('tr');
+
+      // Market cell
+      const marketCell = el('td');
+      let marketBadge;
+      if (asset.market === 'spot') {
+        marketBadge = el('span', { class: 'mode-badge', style: 'background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);' }, 'SPOT');
+      } else if (asset.market === 'futures-demo') {
+        marketBadge = el('span', { class: 'mode-badge mode-badge--demo' }, 'FUTURES DEMO');
+      } else {
+        marketBadge = el('span', { class: 'mode-badge mode-badge--real' }, 'FUTURES REAL');
+      }
+      marketCell.appendChild(marketBadge);
+
+      // Symbol cell
+      const symbolCell = el('td');
+      const symbolStrong = el('strong', {}, asset.symbol || '-');
+      const exchangeHint = el('span', { class: 'hint', style: 'font-size: 0.75rem; margin-left: 0.35rem;' }, `@ ${asset.exchange || ''}`);
+      symbolCell.appendChild(symbolStrong);
+      symbolCell.appendChild(exchangeHint);
+
+      // AutoPilot cell
+      const autoCell = el('td');
+      const isAuto = asset.autopilotEnabled || asset.strategyMode === 'auto';
+      const autoBadge = isAuto
+        ? el('span', { class: 'badge', style: 'background: rgba(16, 185, 129, 0.15); color: #10b981; border-color: rgba(16, 185, 129, 0.3);' }, '⚡ Auto')
+        : el('span', { class: 'badge', style: 'background: rgba(148, 163, 184, 0.1); color: var(--color-text-dim);' }, 'Manual');
+      autoCell.appendChild(autoBadge);
+
+      // Timeframe cell
+      const tfCell = el('td');
+      const tfStrong = el('strong', {}, asset.timeframe || '1h');
+      tfCell.appendChild(tfStrong);
+      if (asset.timeframeMode === 'auto') {
+        tfCell.appendChild(el('span', { class: 'hint', style: 'font-size: 0.7rem; color: #38bdf8; margin-left: 0.35rem;' }, ' (Auto)'));
+      }
+
+      // Strategies & Individual Win Rates cell
+      const stratsCell = el('td');
+      if (asset.metrics?.strategies && asset.metrics.strategies.length > 0) {
+        asset.metrics.strategies.forEach((s) => {
+          const badge = el('span', { class: 'strategy-metric-badge' });
+          badge.appendChild(document.createTextNode((s.strategyName || getStrategyDisplayName(s.strategyId)) + ' '));
+          badge.appendChild(el('strong', {}, `${fmt(s.winRatePercent, 1)}%`));
+          stratsCell.appendChild(badge);
+        });
+      } else if (asset.selectedStrategies && asset.selectedStrategies.length > 0) {
+        asset.selectedStrategies.forEach((id) => {
+          stratsCell.appendChild(el('span', {
+            class: 'badge',
+            style: 'background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border-color: rgba(99, 102, 241, 0.3); margin-right: 4px;',
+          }, getStrategyDisplayName(id)));
+        });
+      } else {
+        stratsCell.appendChild(el('span', { class: 'hint', style: 'font-size: 0.75rem;' }, `Single: ${getStrategyDisplayName(asset.strategyId)}`));
+      }
+
+      // Avg Win Rate % cell
+      const wrVal = asset.metrics?.compositeWinRatePercent;
+      let wrCell;
+      if (typeof wrVal === 'number' && Number.isFinite(wrVal)) {
+        const wrColor = wrVal >= 60 ? '#10b981' : wrVal >= 48 ? '#38bdf8' : 'var(--color-text-dim)';
+        wrCell = el('td', { style: `font-family: var(--font-mono); font-weight: 700; color: ${wrColor};` }, `${fmt(wrVal, 1)}%`);
+      } else {
+        wrCell = el('td');
+        wrCell.appendChild(el('span', { class: 'hint' }, '-'));
+      }
+
+      // Net P&L % cell
+      const pnlVal = asset.metrics?.compositePnlPercent;
+      let pnlCell;
+      if (typeof pnlVal === 'number' && Number.isFinite(pnlVal)) {
+        const pnlColor = pnlVal > 0 ? '#10b981' : pnlVal < 0 ? '#ef4444' : 'inherit';
+        pnlCell = el('td', { style: `font-family: var(--font-mono); color: ${pnlColor}; font-weight: 600;` }, `${fmt(pnlVal, 2)}%`);
+      } else {
+        pnlCell = el('td');
+        pnlCell.appendChild(el('span', { class: 'hint' }, '-'));
+      }
+
+      // Trades cell
+      const tradesVal = asset.metrics?.totalTradeCount;
+      let tradesCell;
+      if (typeof tradesVal === 'number' && Number.isFinite(tradesVal)) {
+        tradesCell = el('td', { style: 'font-family: var(--font-mono);' }, String(tradesVal));
+      } else {
+        tradesCell = el('td');
+        tradesCell.appendChild(el('span', { class: 'hint' }, '-'));
+      }
+
+      // Status cell
+      const statusCell = el('td');
+      if (asset.evaluated) {
+        const dot = el('span', { class: 'status-indicator status-indicator--live', style: 'width: 7px; height: 7px; background: #10b981; border-radius: 50%; display: inline-block; margin-right: 4px;' });
+        const text = el('span', { style: 'color: #10b981;' }, 'Evaluated');
+        statusCell.appendChild(dot);
+        statusCell.appendChild(text);
+      } else {
+        statusCell.appendChild(el('span', { style: 'color: #f59e0b;' }, '⏳ Pending Cycle'));
+      }
+
+      // Last evaluated cell
+      const lastEvalCell = el('td', { style: 'font-size: 0.78rem; font-family: var(--font-mono);' },
+        asset.strategySelectionUpdatedAt ? formatTimestamp(asset.strategySelectionUpdatedAt) : '-'
+      );
+
+      // Actions cell
+      const actionCell = el('td', { style: 'white-space: nowrap;' });
+      const breakdownBtn = el('button', { type: 'button', class: 'btn-breakdown', style: 'font-size: 0.75rem; padding: 0.25rem 0.55rem; margin-right: 0.35rem;' }, '📊 Breakdown');
+      breakdownBtn.addEventListener('click', () => showStrategyBreakdownModal(asset));
+
+      const testBtn = el('button', { type: 'button', style: 'font-size: 0.75rem; padding: 0.25rem 0.55rem;' }, '🔄 Test');
+      testBtn.addEventListener('click', () => retestAutoPilotAsset(asset, testBtn));
+
+      actionCell.appendChild(breakdownBtn);
+      actionCell.appendChild(testBtn);
+
+      [marketCell, symbolCell, autoCell, tfCell, stratsCell, wrCell, pnlCell, tradesCell, statusCell, lastEvalCell, actionCell].forEach((c) => row.appendChild(c));
+      tbody.appendChild(row);
+    });
+  }
+
+  async function retestAutoPilotAsset(asset, btn) {
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = '⏳ Testing...';
+
+    try {
+      const res = await Api.evaluateAutoPilotAsset({
+        symbol: asset.symbol,
+        exchange: asset.exchange,
+        timeframe: asset.timeframe,
+        market: asset.market,
+      });
+
+      if (res.timeframe) {
+        asset.timeframe = res.timeframe;
+      }
+      asset.metrics = res.metrics;
+      asset.selectedStrategies = res.selected;
+      asset.evaluated = true;
+      asset.strategySelectionUpdatedAt = new Date().toISOString();
+
+      updateAutoPilotKpis(cachedMatrixAssets);
+      renderAutoPilotMatrixRows();
+
+      toast(`Evaluated ${asset.symbol} on ${asset.timeframe}: Win Rate ${res.metrics?.compositeWinRatePercent || 0}%, P&L ${res.metrics?.compositePnlPercent || 0}%!`, 'success');
+    } catch (err) {
+      toast(`Evaluation failed for ${asset.symbol}: ${err.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+
+  async function loadAutoPilotMatrix() {
+    const tbody = document.getElementById('autopilot-matrix-tbody');
+    if (!tbody) return;
+
+    try {
+      const data = await Api.getAutoPilotMatrix();
+      if (!data) return;
+
+      if (data.config) {
+        const lookbackEl = document.getElementById('autopilot-config-lookback');
+        const minTradesEl = document.getElementById('autopilot-config-min-trades');
+        const topCountEl = document.getElementById('autopilot-config-top-count');
+        const intervalEl = document.getElementById('autopilot-config-interval');
+
+        if (lookbackEl) lookbackEl.textContent = `${data.config.lookbackDays}d`;
+        if (minTradesEl) minTradesEl.textContent = String(data.config.minTrades);
+        if (topCountEl) topCountEl.textContent = `${data.config.selectionCount} Strategies`;
+        if (intervalEl) intervalEl.textContent = `${Math.round((data.config.intervalMs || 43200000) / 3600000)}h`;
+      }
+
+      cachedMatrixAssets = data.assets || [];
+      const evaluatedCount = cachedMatrixAssets.filter((a) => a.evaluated).length;
+      const countEl = document.getElementById('autopilot-matrix-eval-count');
+      if (countEl) countEl.textContent = `${evaluatedCount} / ${cachedMatrixAssets.length} Evaluated`;
+
+      updateAutoPilotKpis(cachedMatrixAssets);
+      renderAutoPilotMatrixRows();
+    } catch (err) {
+      clear(tbody);
+      const errRow = el('tr', {},
+        el('td', { colspan: '11', style: 'text-align: center; color: #ef4444; padding: 1rem;' }, `Failed to load AutoPilot matrix: ${err.message}`)
+      );
+      tbody.appendChild(errRow);
+    }
+  }
+
+  async function showStrategyBreakdownModal(asset) {
+    const backdrop = document.getElementById('autopilot-breakdown-backdrop');
+    const titleEl = document.getElementById('autopilot-breakdown-title');
+    const metaEl = document.getElementById('autopilot-breakdown-meta');
+    const tbody = document.getElementById('autopilot-breakdown-tbody');
+    if (!backdrop || !tbody) return;
+
+    backdrop.hidden = false;
+    titleEl.textContent = `AutoPilot Strategy Evaluation: ${asset.symbol} (${asset.market.toUpperCase()})`;
+    metaEl.textContent = `Simulating 30-day historical candles for ${asset.symbol} @ ${asset.exchange} (${asset.timeframe})...`;
+
+    clear(tbody);
+    const loadingRow = el('tr', {},
+      el('td', { colspan: '6', style: 'text-align: center; padding: 2rem; color: #38bdf8;' }, '⏳ Running multi-strategy grid backtests across all threshold combinations...')
+    );
+    tbody.appendChild(loadingRow);
+
+    try {
+      const result = await Api.evaluateAutoPilotAsset({
+        symbol: asset.symbol,
+        exchange: asset.exchange,
+        timeframe: asset.timeframe,
+        market: asset.market,
+      });
+
+      // Update cached row data if it exists
+      if (result.timeframe) {
+        asset.timeframe = result.timeframe;
+      }
+      titleEl.textContent = `AutoPilot Strategy Evaluation: ${asset.symbol} (${asset.market.toUpperCase()}) - ${asset.timeframe}${asset.timeframeMode === 'auto' ? ' (Auto)' : ''}`;
+      asset.metrics = result.metrics;
+      asset.selectedStrategies = result.selected;
+      asset.evaluated = true;
+      asset.strategySelectionUpdatedAt = new Date().toISOString();
+      updateAutoPilotKpis(cachedMatrixAssets);
+      renderAutoPilotMatrixRows();
+
+      clear(metaEl);
+      metaEl.append(
+        'Range: ',
+        el('strong', {}, formatTimestamp(result.startUtc)),
+        ' to ',
+        el('strong', {}, formatTimestamp(result.endUtc)),
+        ' • Selection Criteria: ',
+        el('strong', {}, `Top ${result.selectionCount}`),
+        ` by Win Rate (Min ${result.minTrades} closed trades)`
+      );
+
+      clear(tbody);
+      const strats = result.strategies || [];
+      if (strats.length === 0) {
+        const emptyRow = el('tr', {},
+          el('td', { colspan: '6', style: 'text-align: center; padding: 1rem;' }, 'No strategy simulation data returned.')
+        );
+        tbody.appendChild(emptyRow);
+        return;
+      }
+
+      strats.forEach((s) => {
+        const row = el('tr');
+        const isSelected = Array.isArray(result.selected) && result.selected.includes(s.strategyId);
+
+        if (isSelected) {
+          row.style.background = 'rgba(16, 185, 129, 0.08)';
+        }
+
+        const winRateColor = s.winRatePercent >= 60 ? '#10b981' : s.winRatePercent >= 45 ? '#38bdf8' : 'var(--color-text-dim)';
+        const pnlColor = s.totalPnlPercent > 0 ? '#10b981' : s.totalPnlPercent < 0 ? '#ef4444' : 'inherit';
+
+        let statusBadge;
+        if (isSelected) {
+          statusBadge = el('span', { class: 'badge', style: 'background: rgba(16, 185, 129, 0.2); color: #10b981; border-color: rgba(16, 185, 129, 0.4);' }, '⭐ AutoPilot Selected');
+        } else if (!s.qualifies) {
+          statusBadge = el('span', { class: 'badge', style: 'background: rgba(245, 158, 11, 0.1); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);' }, `Low Trades (<${result.minTrades})`);
+        } else {
+          statusBadge = el('span', { class: 'hint' }, 'Eligible (Lower Rank)');
+        }
+
+        const nameCell = el('td');
+        nameCell.appendChild(el('strong', {}, s.strategyName || s.strategyId));
+
+        const winRateCell = el('td', { style: `color: ${winRateColor}; font-weight: 600; font-family: var(--font-mono);` }, `${fmt(s.winRatePercent, 1)}%`);
+        const pnlCell = el('td', { style: `color: ${pnlColor}; font-family: var(--font-mono);` }, `${fmt(s.totalPnlPercent, 2)}%`);
+        const tradesCell = el('td', { style: 'font-family: var(--font-mono);' }, String(s.tradeCount));
+        const ddCell = el('td', { style: 'font-family: var(--font-mono); color: var(--color-text-dim);' }, `${fmt(s.maxDrawdownPercent, 2)}%`);
+        
+        const statusCell = el('td');
+        statusCell.appendChild(statusBadge);
+
+        [nameCell, winRateCell, pnlCell, tradesCell, ddCell, statusCell].forEach((c) => row.appendChild(c));
+        tbody.appendChild(row);
+      });
+    } catch (err) {
+      clear(tbody);
+      const errRow = el('tr', {},
+        el('td', { colspan: '6', style: 'text-align: center; color: #ef4444; padding: 1.5rem;' }, `Evaluation failed: ${err.message}`)
+      );
+      tbody.appendChild(errRow);
+    }
+  }
+
+  function initAutoPilotMatrix() {
+    const evalAllBtn = document.getElementById('autopilot-matrix-eval-all-btn');
+    if (evalAllBtn) {
+      evalAllBtn.addEventListener('click', async () => {
+        evalAllBtn.disabled = true;
+        const originalText = evalAllBtn.textContent;
+        evalAllBtn.textContent = '⏳ Evaluating all assets (running backtests)...';
+        try {
+          const res = await Api.evaluateAutoPilotAll();
+          toast(`AutoPilot evaluation finished (${res.spotEvaluated} spot, ${res.demoFuturesEvaluated} demo futures, ${res.realFuturesEvaluated} real futures).`, 'success');
+          await loadAutoPilotMatrix();
+        } catch (err) {
+          toast(`AutoPilot evaluation failed: ${err.message}`, 'error');
+        } finally {
+          evalAllBtn.disabled = false;
+          evalAllBtn.textContent = originalText;
+        }
+      });
+    }
+
+    const refreshBtn = document.getElementById('autopilot-matrix-refresh-btn');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => {
+        loadAutoPilotMatrix();
+        toast('AutoPilot matrix refreshed.', 'info');
+      });
+    }
+
+    // Market filters
+    const filterContainer = document.getElementById('autopilot-matrix-market-filters');
+    if (filterContainer) {
+      filterContainer.addEventListener('click', (e) => {
+        const btn = e.target.closest('.btn-filter');
+        if (!btn) return;
+        filterContainer.querySelectorAll('.btn-filter').forEach((b) => b.classList.remove('btn-filter--active'));
+        btn.classList.add('btn-filter--active');
+        matrixActiveFilter = btn.dataset.market || 'all';
+        renderAutoPilotMatrixRows();
+      });
+    }
+
+    // Search input
+    const searchInput = document.getElementById('autopilot-matrix-search');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        matrixSearchQuery = searchInput.value || '';
+        renderAutoPilotMatrixRows();
+      });
+    }
+
+    const modalBackdrop = document.getElementById('autopilot-breakdown-backdrop');
+    const closeBtn = document.getElementById('autopilot-breakdown-close-btn');
+    const doneBtn = document.getElementById('autopilot-breakdown-done-btn');
+    if (closeBtn) closeBtn.addEventListener('click', () => { if (modalBackdrop) modalBackdrop.hidden = true; });
+    if (doneBtn) doneBtn.addEventListener('click', () => { if (modalBackdrop) modalBackdrop.hidden = true; });
+    if (modalBackdrop) {
+      modalBackdrop.addEventListener('click', (e) => {
+        if (e.target === modalBackdrop) modalBackdrop.hidden = true;
+      });
+    }
+  }
+
   // ---------- persistent status bar (always visible, independent of active tab) ----------
 
   async function refreshStatusBar() {
@@ -1805,6 +2646,25 @@
         emergencyEl.textContent = '🟢 Active';
         emergencyEl.className = 'status-bar__value status-emergency--active';
       }
+
+      try {
+        const fng = await Api.getFearAndGreed();
+        const fngEl = document.getElementById('status-fng-value');
+        if (fngEl && fng) {
+          fngEl.textContent = `${fng.value} (${fng.classification})`;
+          if (fng.value <= 25) {
+            fngEl.style.color = '#ef4444';
+          } else if (fng.value <= 45) {
+            fngEl.style.color = '#f97316';
+          } else if (fng.value <= 55) {
+            fngEl.style.color = '#eab308';
+          } else if (fng.value <= 75) {
+            fngEl.style.color = '#22c55e';
+          } else {
+            fngEl.style.color = '#10b981';
+          }
+        }
+      } catch {}
     } catch (err) {
       // Non-critical, always-on background refresh — don't spam toasts on transient failures.
     }
@@ -1995,6 +2855,56 @@
     }
   }
 
+  function setupTelegramIntegration() {
+    const testBtn = document.getElementById('telegram-test-btn');
+    const tokenInput = document.getElementById('telegram-token-input');
+    const chatIdInput = document.getElementById('telegram-chatid-input');
+    const statusText = document.getElementById('telegram-status-text');
+
+    if (!testBtn) return;
+
+    async function checkStatus() {
+      try {
+        const res = await Api.getTelegramStatus();
+        clear(statusText);
+        if (res.enabled) {
+          statusText.textContent = '🟢 Telegram is active and configured. Alerts will be sent automatically.';
+          statusText.style.color = '#10b981';
+        } else if (res.hasToken && res.hasChatId) {
+          statusText.textContent = '🟡 Credentials present, but TELEGRAM_NOTIFICATIONS_ENABLED is false in .env';
+          statusText.style.color = '#f59e0b';
+        } else {
+          statusText.textContent = '⚪ Not configured. Enter your Bot Token and Chat ID above to test.';
+          statusText.style.color = 'var(--color-fg-muted)';
+        }
+      } catch {}
+    }
+
+    testBtn.addEventListener('click', async () => {
+      testBtn.disabled = true;
+      testBtn.textContent = 'Sending...';
+      try {
+        const botToken = tokenInput.value.trim() || undefined;
+        const chatId = chatIdInput.value.trim() || undefined;
+        await Api.sendTelegramTest({ botToken, chatId });
+        toast('Telegram test message sent successfully!', 'success');
+        clear(statusText);
+        statusText.textContent = '✅ Test message sent successfully!';
+        statusText.style.color = '#10b981';
+      } catch (err) {
+        toast(err.message, 'error');
+        clear(statusText);
+        statusText.textContent = `❌ Error: ${err.message}`;
+        statusText.style.color = '#ef4444';
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = 'Send Test Message';
+      }
+    });
+
+    checkStatus();
+  }
+
   // ---------- init ----------
 
   function init() {
@@ -2012,6 +2922,7 @@
     document.getElementById('add-watchlist-btn').addEventListener('click', addCurrentAssetToWatchlist);
     document.getElementById('add-to-watchlist-btn').addEventListener('click', addAssetToWatchList);
     document.getElementById('enable-all-autotrade-btn').addEventListener('click', enableAutoTradeForAll);
+    document.getElementById('enable-all-autopilot-btn')?.addEventListener('click', enableAutoPilotForAll);
 
     const symbolInput = document.getElementById('symbol-input');
     const symbolSuggestionsList = document.getElementById('symbol-suggestions-list');
@@ -2049,10 +2960,13 @@
     initOrderForm('real', 'real-order-form');
     initBacktestForm();
     initOptimizer();
+    initAutoPilotMatrix();
+    loadAutoPilotMatrix();
     initRiskSettingsForm();
     initFuturesRiskSettingsForm();
     initEmergencyControls();
     initRealCredentialsForm();
+    setupTelegramIntegration();
     document.getElementById('refresh-real-balance-btn').addEventListener('click', () => refreshRealBalance());
 
     document.getElementById('refresh-system-btn').addEventListener('click', refreshSystemStatus);
