@@ -12,6 +12,7 @@ const { placeRealFuturesOrder, placeRealFuturesPartialClose } = require('../orde
 // destructured — same t.mock.method(moduleObject, 'fn', ...) convention as every other module in
 // this codebase that gets mocked in tests.
 const atrTrailing = require('../risk/atr-trailing');
+const { detectCandleSpike, detectMomentumExhaustion } = require('../risk/adaptive-take-profit-engine');
 const technicalAnalysis = require('../technical-analysis');
 const technicalScorer = require('../signals/technical-scorer');
 const { computeRealizedR } = require('../risk/realized-r');
@@ -229,7 +230,11 @@ function logTriggerResult(mode, market, position, reason, snapshotPrice, order) 
 async function fetchFreshIndicatorsForReversalCheck({ symbol, exchange, market, timeframe }) {
   try {
     const candles = await marketDataService.getCandles({ symbol, exchange, timeframe: timeframe || '1h', limit: 100, market });
-    return technicalAnalysis.computeAllIndicators(candles);
+    const indicators = technicalAnalysis.computeAllIndicators(candles);
+    if (indicators && candles && candles.length > 0) {
+      indicators.latestCandle = candles[candles.length - 1];
+    }
+    return indicators;
   } catch {
     return null;
   }
@@ -306,6 +311,90 @@ function logAdaptiveTrailingSeed(mode, market, position, seeded) {
 }
 
 /**
+ * Checks for favorable candle spikes or momentum exhaustion on open positions and tightens
+ * the stop-loss / trailing stop to lock in peak profits before market retraces.
+ */
+function applySpikeAndExhaustionChecks(mode, market, position, currentPrice, freshIndicators) {
+  if (!freshIndicators) return;
+  const side = position.side || 'long';
+  const isLong = side === 'long' || side === 'buy';
+  const unrealizedPnl = isLong
+    ? (currentPrice - position.entry_price) * position.qty
+    : (position.entry_price - currentPrice) * position.qty;
+
+  const atrVal = freshIndicators.atr?.status === 'ok' && typeof freshIndicators.atr.value === 'number'
+    ? freshIndicators.atr.value
+    : (typeof position.entry_atr === 'number' ? position.entry_atr : null);
+
+  if (!atrVal) return;
+
+  const repo = market === 'futures' ? futuresPositionsRepository : positionsRepository;
+
+  // 1. Check for favorable candle spike (sharp expansion in position favor)
+  if (freshIndicators.latestCandle) {
+    const spike = detectCandleSpike({
+      latestCandle: freshIndicators.latestCandle,
+      atr: atrVal,
+      side,
+      relativeVolume: freshIndicators.volumeAnalysis?.value?.relativeVolume,
+    });
+
+    if (spike.isSpike && unrealizedPnl > 0 && typeof spike.suggestedStop === 'number') {
+      const improved = isLong
+        ? spike.suggestedStop > (position.stop_loss ?? -Infinity)
+        : spike.suggestedStop < (position.stop_loss ?? Infinity);
+
+      if (improved) {
+        repo.updateTrailingStop(mode, position.user_id, position.id, {
+          stopLoss: spike.suggestedStop,
+          highWaterMark: currentPrice,
+        });
+        logger.info(
+          'adaptive-tp',
+          `Spike profit-lock for ${position.symbol} (${market} ${mode}): ${spike.reason} Stop tightened to ${spike.suggestedStop.toFixed(4)}`,
+          { positionId: position.id, userId: position.user_id, suggestedStop: spike.suggestedStop },
+          mode
+        );
+        position.stop_loss = spike.suggestedStop;
+        position.trailing_high_water_mark = currentPrice;
+      }
+    }
+  }
+
+  // 2. Check for momentum exhaustion while in profit
+  if (unrealizedPnl > 0) {
+    const exhaustion = detectMomentumExhaustion({
+      indicators: freshIndicators,
+      side,
+      unrealizedPnl,
+      currentPrice,
+      atr: atrVal,
+    });
+
+    if (exhaustion.isExhausted && typeof exhaustion.suggestedStop === 'number') {
+      const improved = isLong
+        ? exhaustion.suggestedStop > (position.stop_loss ?? -Infinity)
+        : exhaustion.suggestedStop < (position.stop_loss ?? Infinity);
+
+      if (improved) {
+        repo.updateTrailingStop(mode, position.user_id, position.id, {
+          stopLoss: exhaustion.suggestedStop,
+          highWaterMark: currentPrice,
+        });
+        logger.info(
+          'adaptive-tp',
+          `Momentum exhaustion profit-lock for ${position.symbol} (${market} ${mode}): ${exhaustion.reason} Stop tightened to ${exhaustion.suggestedStop.toFixed(4)}`,
+          { positionId: position.id, userId: position.user_id, suggestedStop: exhaustion.suggestedStop },
+          mode
+        );
+        position.stop_loss = exhaustion.suggestedStop;
+        position.trailing_high_water_mark = currentPrice;
+      }
+    }
+  }
+}
+
+/**
  * Adaptive-TP orchestration for one spot position, called before the classic trailing/trigger
  * checks below. Fires every TP tier the price has crossed (in order — see checkAdaptiveTpTriggers),
  * then checks for a reversal exit, then seeds trailing once TP1 has fired. Mutates `position` in
@@ -364,6 +453,8 @@ async function handleAdaptiveSpotPosition(mode, position, currentPrice) {
       }
       return true;
     }
+
+    applySpikeAndExhaustionChecks(mode, 'spot', position, currentPrice, freshIndicators);
   }
 
   if (position.tp1_filled_at_utc && position.trailing_percent == null) {
@@ -430,6 +521,8 @@ async function handleAdaptiveFuturesPosition(mode, position, currentPrice) {
       }
       return true;
     }
+
+    applySpikeAndExhaustionChecks(mode, 'futures', position, currentPrice, freshIndicators);
   }
 
   if (position.tp1_filled_at_utc && position.trailing_percent == null) {
@@ -599,4 +692,5 @@ module.exports = {
   start, stop, runCycle, getStatus, checkSpotTrigger, checkFuturesTrigger,
   computeSpotTrailingUpdate, computeFuturesTrailingUpdate,
   checkAdaptiveTpTriggers, checkReversalExit,
+  applySpikeAndExhaustionChecks,
 };

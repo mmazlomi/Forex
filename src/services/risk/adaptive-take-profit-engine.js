@@ -331,8 +331,117 @@ function computeAdaptiveTargets(input) {
   };
 }
 
+/**
+ * Detects whether the latest candle represents an abnormal price spike in the direction of the trade.
+ * A candle spike occurs when:
+ * 1. Candle range (high - low) >= spikeAtrMultiplier * ATR
+ * 2. Close is in trade direction (close > open for long, close < open for short)
+ * 3. Body is substantial (body / range >= 0.5 to exclude long rejection wicks / dojis)
+ * 4. Relative volume confirms the spike (if relativeVolume is provided)
+ */
+function detectCandleSpike({ latestCandle, atr, side, relativeVolume, config }) {
+  const cfg = config || mergeConfig();
+  if (!cfg.spikeExitEnabled) return { isSpike: false, reason: null, spikeRange: 0, multiplier: 0, suggestedStop: null };
+  if (!latestCandle || typeof atr !== 'number' || atr <= 0) {
+    return { isSpike: false, reason: null, spikeRange: 0, multiplier: 0, suggestedStop: null };
+  }
+
+  const normSide = normalizeSide(side);
+  if (!normSide) return { isSpike: false, reason: null, spikeRange: 0, multiplier: 0, suggestedStop: null };
+
+  const { open, high, low, close } = latestCandle;
+  if (typeof open !== 'number' || typeof high !== 'number' || typeof low !== 'number' || typeof close !== 'number') {
+    return { isSpike: false, reason: null, spikeRange: 0, multiplier: 0, suggestedStop: null };
+  }
+
+  const range = high - low;
+  const body = Math.abs(close - open);
+  const minRange = atr * (cfg.spikeAtrMultiplier || 2.5);
+
+  if (range < minRange) {
+    return { isSpike: false, reason: null, spikeRange: range, multiplier: Number((range / atr).toFixed(2)), suggestedStop: null };
+  }
+
+  const isFavorable = normSide === 'long' ? close > open : close < open;
+  if (!isFavorable) {
+    return { isSpike: false, reason: null, spikeRange: range, multiplier: Number((range / atr).toFixed(2)), suggestedStop: null };
+  }
+
+  if (range > 0 && body / range < 0.5) {
+    return { isSpike: false, reason: null, spikeRange: range, multiplier: Number((range / atr).toFixed(2)), suggestedStop: null };
+  }
+
+  if (typeof relativeVolume === 'number' && cfg.spikeVolumeMultiplier > 0) {
+    if (relativeVolume < cfg.spikeVolumeMultiplier) {
+      return { isSpike: false, reason: null, spikeRange: range, multiplier: Number((range / atr).toFixed(2)), suggestedStop: null };
+    }
+  }
+
+  const mult = Number((range / atr).toFixed(2));
+  // Suggested stop locks in the lower half of the spike body (50% pullback level)
+  const suggestedStop = normSide === 'long'
+    ? close - (close - open) * 0.5
+    : close + (open - close) * 0.5;
+
+  const reason = `Candle spike detected: range ${range.toFixed(4)} is ${mult}x ATR (>= ${cfg.spikeAtrMultiplier}x)${typeof relativeVolume === 'number' ? ` with ${relativeVolume.toFixed(2)}x volume` : ''}. Suggested tightened stop: ${suggestedStop.toFixed(4)}.`;
+
+  return {
+    isSpike: true,
+    reason,
+    spikeRange: range,
+    multiplier: mult,
+    suggestedStop,
+  };
+}
+
+/**
+ * Detects whether technical momentum is exhausted in the trade direction (extreme RSI overbought/oversold
+ * while the position is in profit), signaling an imminent pullback or trend exhaustion.
+ */
+function detectMomentumExhaustion({ indicators, side, unrealizedPnl, currentPrice, atr, config }) {
+  const cfg = config || mergeConfig();
+  if (!cfg.momentumExhaustionEnabled) return { isExhausted: false, reason: null, rsiValue: null, suggestedStop: null };
+  if (!indicators || typeof unrealizedPnl !== 'number' || unrealizedPnl <= 0) {
+    return { isExhausted: false, reason: null, rsiValue: null, suggestedStop: null };
+  }
+
+  const normSide = normalizeSide(side);
+  if (!normSide) return { isExhausted: false, reason: null, rsiValue: null, suggestedStop: null };
+
+  const rsi = indicators.rsi;
+  if (!rsi || rsi.status !== 'ok' || typeof rsi.value !== 'number') {
+    return { isExhausted: false, reason: null, rsiValue: null, suggestedStop: null };
+  }
+
+  const rsiVal = rsi.value;
+  const overbought = cfg.rsiExhaustionOverbought || 78;
+  const oversold = cfg.rsiExhaustionOversold || 22;
+  const tightMultiplier = cfg.exhaustionTrailingMultiplier || 0.75;
+
+  let suggestedStop = null;
+  if (typeof currentPrice === 'number' && typeof atr === 'number' && atr > 0) {
+    suggestedStop = normSide === 'long'
+      ? currentPrice - atr * tightMultiplier
+      : currentPrice + atr * tightMultiplier;
+  }
+
+  if (normSide === 'long' && rsiVal >= overbought) {
+    const reason = `Momentum exhaustion: RSI ${rsiVal.toFixed(1)} >= ${overbought} (extreme overbought) while in profit (+${unrealizedPnl.toFixed(2)}) — locking profit with tightened ${tightMultiplier}x ATR trail.`;
+    return { isExhausted: true, reason, rsiValue: rsiVal, suggestedStop };
+  }
+
+  if (normSide === 'short' && rsiVal <= oversold) {
+    const reason = `Momentum exhaustion: RSI ${rsiVal.toFixed(1)} <= ${oversold} (extreme oversold) while in profit (+${unrealizedPnl.toFixed(2)}) — locking profit with tightened ${tightMultiplier}x ATR trail.`;
+    return { isExhausted: true, reason, rsiValue: rsiVal, suggestedStop };
+  }
+
+  return { isExhausted: false, reason: null, rsiValue: rsiVal, suggestedStop: null };
+}
+
 module.exports = {
   computeAdaptiveTargets,
+  detectCandleSpike,
+  detectMomentumExhaustion,
   // Exported for direct unit testing of each pure step.
   normalizeSide,
   computeAtrTargets,
@@ -347,3 +456,4 @@ module.exports = {
   deriveVolatilityRegime,
   buildReversalConditions,
 };
+

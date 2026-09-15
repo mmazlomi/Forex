@@ -7,6 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startAuthedTestServer } = require('../fixtures/test-server');
 const marketDataService = require('../../src/services/market-data/market-data-service');
+const assetsRepository = require('../../src/database/repositories/assets-repository');
 const positionsRepository = require('../../src/database/repositories/positions-repository');
 const futuresPositionsRepository = require('../../src/database/repositories/futures-positions-repository');
 
@@ -34,9 +35,15 @@ test('PUT /api/assets/:symbol/trailing sets and clears the per-asset default, an
   const { close, authedFetch } = await startAuthedTestServer();
   t.after(close);
 
-  await authedFetch('/api/assets', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol: 'BTC/USDT', exchange: 'kucoin', assetType: 'crypto' }),
+  const userRes = await authedFetch('/api/auth/me');
+  const userBody = await userRes.json();
+  const userId = userBody.data.id;
+
+  assetsRepository.addAsset(userId, {
+    symbol: 'BTC/USDT',
+    exchange: 'kucoin',
+    market: 'spot',
+    assetType: 'crypto',
   });
 
   const setRes = await authedFetch('/api/assets/BTC%2FUSDT/trailing?exchange=kucoin', {

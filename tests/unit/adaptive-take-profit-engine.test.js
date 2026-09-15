@@ -6,6 +6,7 @@ const {
   computeAdaptiveTargets, normalizeSide, computeAtrTargets, computeRMultipleTargets, blendTargets,
   scaleTargets, snapToStructure, applyStructureSnap, classifyTrendStrength, applyTrendAdjustment,
   applyVolumeModifier, deriveVolatilityRegime, buildReversalConditions,
+  detectCandleSpike, detectMomentumExhaustion,
 } = require('../../src/services/risk/adaptive-take-profit-engine');
 const { DEFAULT_CONFIG, mergeConfig } = require('../../src/services/risk/adaptive-take-profit-config');
 
@@ -431,6 +432,152 @@ test('buildReversalConditions (short): skips resistance within noise buffer (< 0
   const structureBreak = conditions.find((c) => c.type === 'structure_break');
   assert.ok(structureBreak, 'Expected structure_break with valid candidate');
   assert.equal(structureBreak.level, 101.5, 'Must skip 100.1 and 100.4 and snap to 101.5 outside noise buffer');
+});
+
+// ---------- detectCandleSpike ----------
+
+test('detectCandleSpike: returns isSpike=false when spikeExitEnabled is disabled or inputs missing', () => {
+  const resDisabled = detectCandleSpike({ latestCandle: { open: 100, high: 110, low: 99, close: 109 }, atr: 2, side: 'long', config: { spikeExitEnabled: false } });
+  assert.equal(resDisabled.isSpike, false);
+
+  const resNoCandle = detectCandleSpike({ latestCandle: null, atr: 2, side: 'long' });
+  assert.equal(resNoCandle.isSpike, false);
+
+  const resNoAtr = detectCandleSpike({ latestCandle: { open: 100, high: 110, low: 99, close: 109 }, atr: 0, side: 'long' });
+  assert.equal(resNoAtr.isSpike, false);
+});
+
+test('detectCandleSpike: returns isSpike=false when candle range is below spike threshold (< 2.5 * ATR)', () => {
+  // ATR = 4, required range = 10, actual range = 8
+  const res = detectCandleSpike({
+    latestCandle: { open: 100, high: 108, low: 100, close: 107 },
+    atr: 4,
+    side: 'long',
+  });
+  assert.equal(res.isSpike, false);
+});
+
+test('detectCandleSpike: returns isSpike=false when candle is against position direction or body is weak wick', () => {
+  // Long position but candle is bearish (close < open)
+  const resBearish = detectCandleSpike({
+    latestCandle: { open: 115, high: 116, low: 100, close: 102 },
+    atr: 4,
+    side: 'long',
+  });
+  assert.equal(resBearish.isSpike, false);
+
+  // Bullish candle but mostly wick (body < 50% range)
+  const resWick = detectCandleSpike({
+    latestCandle: { open: 100, high: 120, low: 99, close: 105 }, // range 21, body 5 (23.8%)
+    atr: 4,
+    side: 'long',
+  });
+  assert.equal(resWick.isSpike, false);
+});
+
+test('detectCandleSpike: returns isSpike=false when relative volume does not confirm spike', () => {
+  const resLowVol = detectCandleSpike({
+    latestCandle: { open: 100, high: 115, low: 99, close: 114 }, // range 16 >= 2.5 * 4 = 10
+    atr: 4,
+    side: 'long',
+    relativeVolume: 1.1, // threshold is 1.5
+  });
+  assert.equal(resLowVol.isSpike, false);
+});
+
+test('detectCandleSpike: detects valid LONG spike and suggests tightened stop at 50% pullback of candle body', () => {
+  // ATR = 4, range = 115 - 99 = 16 (4x ATR), body = 114 - 100 = 14 (87.5% of range)
+  const res = detectCandleSpike({
+    latestCandle: { open: 100, high: 115, low: 99, close: 114 },
+    atr: 4,
+    side: 'long',
+    relativeVolume: 2.2,
+  });
+  assert.equal(res.isSpike, true);
+  assert.equal(res.multiplier, 4);
+  // suggestedStop = close - (close - open) * 0.5 = 114 - 7 = 107
+  assert.equal(res.suggestedStop, 107);
+  assert.ok(res.reason.includes('Candle spike detected'));
+});
+
+test('detectCandleSpike: detects valid SHORT spike and suggests tightened stop at 50% pullback of candle body', () => {
+  // ATR = 4, range = 101 - 85 = 16, body = 100 - 86 = 14
+  const res = detectCandleSpike({
+    latestCandle: { open: 100, high: 101, low: 85, close: 86 },
+    atr: 4,
+    side: 'short',
+    relativeVolume: 1.8,
+  });
+  assert.equal(res.isSpike, true);
+  assert.equal(res.multiplier, 4);
+  // suggestedStop = close + (open - close) * 0.5 = 86 + 7 = 93
+  assert.equal(res.suggestedStop, 93);
+  assert.ok(res.reason.includes('Candle spike detected'));
+});
+
+// ---------- detectMomentumExhaustion ----------
+
+test('detectMomentumExhaustion: returns isExhausted=false when disabled, not in profit, or RSI not extreme', () => {
+  // Disabled
+  const resDisabled = detectMomentumExhaustion({
+    indicators: { rsi: { status: 'ok', value: 85 } },
+    side: 'long',
+    unrealizedPnl: 15,
+    currentPrice: 110,
+    atr: 2,
+    config: { momentumExhaustionEnabled: false },
+  });
+  assert.equal(resDisabled.isExhausted, false);
+
+  // In loss (unrealizedPnl <= 0)
+  const resLoss = detectMomentumExhaustion({
+    indicators: { rsi: { status: 'ok', value: 85 } },
+    side: 'long',
+    unrealizedPnl: -10,
+    currentPrice: 90,
+    atr: 2,
+  });
+  assert.equal(resLoss.isExhausted, false);
+
+  // Normal RSI (e.g. 60)
+  const resNormal = detectMomentumExhaustion({
+    indicators: { rsi: { status: 'ok', value: 60 } },
+    side: 'long',
+    unrealizedPnl: 20,
+    currentPrice: 110,
+    atr: 2,
+  });
+  assert.equal(resNormal.isExhausted, false);
+});
+
+test('detectMomentumExhaustion: detects LONG exhaustion when RSI >= 78 in profit and calculates tightened 0.75x ATR stop', () => {
+  // Price = 120, ATR = 4, trailing multiplier = 0.75 -> stop = 120 - 3 = 117
+  const res = detectMomentumExhaustion({
+    indicators: { rsi: { status: 'ok', value: 82.5 } },
+    side: 'long',
+    unrealizedPnl: 25.4,
+    currentPrice: 120,
+    atr: 4,
+  });
+  assert.equal(res.isExhausted, true);
+  assert.equal(res.rsiValue, 82.5);
+  assert.equal(res.suggestedStop, 117);
+  assert.ok(res.reason.includes('Momentum exhaustion: RSI 82.5 >= 78'));
+});
+
+test('detectMomentumExhaustion: detects SHORT exhaustion when RSI <= 22 in profit and calculates tightened 0.75x ATR stop', () => {
+  // Price = 80, ATR = 4, trailing multiplier = 0.75 -> stop = 80 + 3 = 83
+  const res = detectMomentumExhaustion({
+    indicators: { rsi: { status: 'ok', value: 18.2 } },
+    side: 'short',
+    unrealizedPnl: 18.0,
+    currentPrice: 80,
+    atr: 4,
+  });
+  assert.equal(res.isExhausted, true);
+  assert.equal(res.rsiValue, 18.2);
+  assert.equal(res.suggestedStop, 83);
+  assert.ok(res.reason.includes('Momentum exhaustion: RSI 18.2 <= 22'));
 });
 
 

@@ -331,7 +331,7 @@ const Futures = (() => {
     return cell;
   }
 
-  const POSITION_TABLE_COLUMN_COUNT = 14; // Symbol..Take (11) + Strategy + Timeframe + Raw-toggle
+  const POSITION_TABLE_COLUMN_COUNT = 16; // Symbol..Adaptive TP (13) + Strategy + Timeframe + Raw-toggle
 
   // Mirrors dashboard.js's identical helper — see its comment.
   function buildStopCell(p) {
@@ -340,6 +340,69 @@ const Futures = (() => {
       cell.appendChild(el('span', {}, ` (trailing ${fmt(p.trailing_percent, 2)}%)`));
       cell.title = `Trailing stop: ${fmt(p.trailing_percent, 2)}% behind the high-water mark of ${fmtPrice(p.trailing_high_water_mark)} — moves in your favor only, never loosens.`;
     }
+    return cell;
+  }
+
+  function buildAdaptiveTpCell(p) {
+    if (!p.adaptive_tp_enabled) {
+      return el('td', { class: 'text-muted' }, '-');
+    }
+
+    const cell = el('td', { class: 'adaptive-tp-cell' });
+    const container = el('div', { class: 'adaptive-tp-wrap' });
+
+    let partialExits = [];
+    if (p.partial_exits_json) {
+      try {
+        partialExits = typeof p.partial_exits_json === 'string' ? JSON.parse(p.partial_exits_json) : p.partial_exits_json;
+      } catch {}
+    }
+
+    const tiers = [
+      { num: 1, price: p.tp1_price, filledAt: p.tp1_filled_at_utc, fillPrice: p.tp1_fill_price, qtyPct: p.tp1_qty_percent },
+      { num: 2, price: p.tp2_price, filledAt: p.tp2_filled_at_utc, fillPrice: p.tp2_fill_price, qtyPct: p.tp2_qty_percent },
+      { num: 3, price: p.tp3_price, filledAt: p.tp3_filled_at_utc, fillPrice: p.tp3_fill_price, qtyPct: p.tp3_qty_percent },
+    ];
+
+    const tooltipLines = ['⚡ Adaptive Take-Profit Tiers:'];
+    let hasAnyTier = false;
+
+    tiers.forEach((t) => {
+      if (t.price == null) return;
+      hasAnyTier = true;
+      const isFilled = Boolean(t.filledAt);
+      const exitData = Array.isArray(partialExits) ? partialExits.find((pe) => pe.level === t.num) : null;
+      const chip = el('span', {
+        class: `tp-tier-chip ${isFilled ? 'tp-tier-chip--filled' : 'tp-tier-chip--pending'}`,
+      });
+      const checkmark = isFilled ? ' ✓' : '';
+      chip.textContent = `T${t.num}: ${fmtPrice(t.price)}${checkmark}`;
+
+      let tierTip = `TP${t.num}: ${fmtPrice(t.price)}`;
+      if (t.qtyPct != null) tierTip += ` (${fmt(t.qtyPct, 0)}%)`;
+      if (isFilled) {
+        tierTip += ` [FILLED${t.fillPrice ? ' @ ' + fmtPrice(t.fillPrice) : ''}`;
+        if (exitData && exitData.pnl != null) {
+          tierTip += ` | PnL: ${exitData.pnl >= 0 ? '+' : ''}${fmt(exitData.pnl, 2)}`;
+        }
+        if (t.filledAt) {
+          tierTip += ` on ${formatTimestamp(t.filledAt)}`;
+        }
+        tierTip += `]`;
+      } else {
+        tierTip += ` [Pending]`;
+      }
+      chip.title = tierTip;
+      tooltipLines.push(tierTip);
+      container.appendChild(chip);
+    });
+
+    if (!hasAnyTier) {
+      return el('td', { class: 'text-muted' }, 'Active');
+    }
+
+    cell.appendChild(container);
+    cell.title = tooltipLines.join('\n');
     return cell;
   }
 
@@ -356,10 +419,12 @@ const Futures = (() => {
         liqCell.title = `Only ${fmt(p.liquidationDistancePercent, 1)}% away from liquidation at the current price.`;
       }
       const rawRow = buildRawRow(p, POSITION_TABLE_COLUMN_COUNT);
+      const initialStop = p.initial_stop_loss != null ? p.initial_stop_loss : p.stop_loss;
       row.append(
         el('td', {}, p.symbol), el('td', {}, p.exchange || '-'), el('td', {}, p.side), el('td', {}, `${p.leverage}x`), el('td', {}, fmt(p.qty, 6)),
         el('td', {}, fmtPrice(p.entry_price)), el('td', {}, p.currentPrice != null ? fmtPrice(p.currentPrice) : '-'),
-        unrealizedCell, liqCell, buildStopCell(p), el('td', {}, fmtPrice(p.take_profit)),
+        unrealizedCell, liqCell, el('td', {}, fmtPrice(initialStop)), buildStopCell(p),
+        el('td', {}, fmtPrice(p.take_profit)), buildAdaptiveTpCell(p),
         buildStrategyCell(p), buildTimeframeCell(p), buildRawToggleCell(rawRow)
       );
       body.appendChild(row);
@@ -446,13 +511,14 @@ const Futures = (() => {
       const pnlCell = el('td', {}, t.realized_pnl != null ? fmt(t.realized_pnl) : '-');
       if (t.realized_pnl > 0) pnlCell.className = 'text-positive';
       else if (t.realized_pnl < 0) pnlCell.className = 'text-negative';
-      const strategyLabel = t.strategies && t.strategies.length > 0 ? t.strategies.map((s) => s.name).join(' + ') : '-';
+      const initialSl = t.initial_stop_loss != null ? t.initial_stop_loss : t.stop_loss;
       const trailedStop = t.trailing_percent != null ? fmtPrice(t.stop_loss) : '-';
       row.append(
         el('td', {}, formatTimestamp(t.opened_at_utc)), el('td', {}, formatTimestamp(t.closed_at_utc)),
         el('td', {}, t.symbol), el('td', {}, t.side), el('td', {}, `${t.leverage}x`), el('td', {}, strategyLabel), el('td', {}, t.timeframe || '-'),
         el('td', {}, fmt(t.qty, 6)), el('td', {}, fmtPrice(t.entry_price)),
-        el('td', {}, fmtPrice(t.initial_stop_loss)), el('td', {}, fmtPrice(t.take_profit)), el('td', {}, trailedStop),
+        el('td', {}, fmtPrice(initialSl)), el('td', {}, trailedStop),
+        el('td', {}, fmtPrice(t.take_profit)), buildAdaptiveTpCell(t),
         el('td', {}, fmtPrice(t.exit_price)), el('td', {}, exitReasonLabel(t.exit_reason)), pnlCell
       );
       body.appendChild(row);

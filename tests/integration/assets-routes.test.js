@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startAuthedTestServer } = require('../fixtures/test-server');
+const assetsRepository = require('../../src/database/repositories/assets-repository');
 
 async function json(res) {
   return res.json();
@@ -12,9 +13,11 @@ test('PUT /api/assets/:symbol/timeframe updates default_timeframe and validates 
   const { close, authedFetch } = await startAuthedTestServer();
   t.after(close);
 
-  await authedFetch('/api/assets', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol: 'BTC/USDT', exchange: 'kucoin', assetType: 'crypto', defaultTimeframe: '1h' }),
+  const userRes = await authedFetch('/api/auth/me');
+  const user = await json(userRes);
+
+  assetsRepository.addAsset(user.data.id, {
+    symbol: 'BTC/USDT', exchange: 'kucoin', market: 'spot', assetType: 'crypto', defaultTimeframe: '1h',
   });
 
   const res = await authedFetch('/api/assets/BTC%2FUSDT/timeframe?exchange=kucoin', {
@@ -49,9 +52,11 @@ test('PUT /api/assets/:symbol/exchange moves a watchlist entry to a different ex
   const { close, authedFetch } = await startAuthedTestServer();
   t.after(close);
 
-  await authedFetch('/api/assets', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol: 'BTC/USDT', exchange: 'kucoin', assetType: 'crypto', defaultTimeframe: '1h' }),
+  const userRes = await authedFetch('/api/auth/me');
+  const user = await json(userRes);
+
+  assetsRepository.addAsset(user.data.id, {
+    symbol: 'BTC/USDT', exchange: 'kucoin', market: 'spot', assetType: 'crypto', defaultTimeframe: '1h',
   });
 
   const res = await authedFetch('/api/assets/BTC%2FUSDT/exchange?exchange=kucoin', {
@@ -82,13 +87,11 @@ test('PUT /api/assets/:symbol/exchange moves a watchlist entry to a different ex
   assert.equal(notFound.status, 404);
   assert.equal((await json(notFound)).errorCode, 'ASSET_NOT_FOUND');
 
-  await authedFetch('/api/assets', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol: 'ETH/USDT', exchange: 'kucoin', assetType: 'crypto', defaultTimeframe: '1h' }),
+  assetsRepository.addAsset(user.data.id, {
+    symbol: 'ETH/USDT', exchange: 'kucoin', market: 'spot', assetType: 'crypto', defaultTimeframe: '1h',
   });
-  await authedFetch('/api/assets', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol: 'ETH/USDT', exchange: 'mexc', assetType: 'crypto', defaultTimeframe: '1h' }),
+  assetsRepository.addAsset(user.data.id, {
+    symbol: 'ETH/USDT', exchange: 'mexc', market: 'spot', assetType: 'crypto', defaultTimeframe: '1h',
   });
   const conflict = await authedFetch('/api/assets/ETH%2FUSDT/exchange?exchange=kucoin', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newExchange: 'mexc' }),

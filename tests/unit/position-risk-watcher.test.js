@@ -9,7 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   checkSpotTrigger, checkFuturesTrigger, computeSpotTrailingUpdate, computeFuturesTrailingUpdate,
-  checkAdaptiveTpTriggers, checkReversalExit,
+  checkAdaptiveTpTriggers, checkReversalExit, applySpikeAndExhaustionChecks,
 } = require('../../src/services/scheduler/position-risk-watcher');
 
 test('spot (long-only): stop-loss triggers at-or-below the stored level', () => {
@@ -228,5 +228,67 @@ test('checkReversalExit (regression): ignores structure_break if the level was a
   const fired = checkReversalExit(validPosition, 2496, null);
   assert.ok(fired);
   assert.equal(fired.level, 2495);
+});
+
+test('applySpikeAndExhaustionChecks: ratchets stop_loss on favorable spike for long position', () => {
+  const position = {
+    id: 9999,
+    user_id: 1,
+    symbol: 'BTCUSDT',
+    side: 'long',
+    entry_price: 100,
+    qty: 1,
+    stop_loss: 95,
+  };
+  const freshIndicators = {
+    atr: { status: 'ok', value: 4 },
+    volumeAnalysis: { status: 'ok', value: { relativeVolume: 2.0 } },
+    latestCandle: { open: 100, high: 115, low: 99, close: 114 }, // range 16 (4x ATR), body 14
+  };
+  // currentPrice 114 > 100 -> in profit
+  applySpikeAndExhaustionChecks('demo', 'spot', position, 114, freshIndicators);
+  // suggestedStop = 114 - 7 = 107 > 95
+  assert.equal(position.stop_loss, 107);
+  assert.equal(position.trailing_high_water_mark, 114);
+});
+
+test('applySpikeAndExhaustionChecks: ratchets stop_loss on momentum exhaustion (extreme RSI) for short position', () => {
+  const position = {
+    id: 9998,
+    user_id: 1,
+    symbol: 'ETHUSDT',
+    side: 'short',
+    entry_price: 100,
+    qty: 1,
+    stop_loss: 105,
+  };
+  const freshIndicators = {
+    atr: { status: 'ok', value: 4 },
+    rsi: { status: 'ok', value: 15 }, // extreme oversold <= 22
+  };
+  // currentPrice 80 < 100 -> in profit for short
+  applySpikeAndExhaustionChecks('demo', 'futures', position, 80, freshIndicators);
+  // suggestedStop = 80 + 4 * 0.75 = 83 < 105
+  assert.equal(position.stop_loss, 83);
+  assert.equal(position.trailing_high_water_mark, 80);
+});
+
+test('applySpikeAndExhaustionChecks: never loosens stop_loss if existing stop is already better', () => {
+  const position = {
+    id: 9997,
+    user_id: 1,
+    symbol: 'SOLUSDT',
+    side: 'long',
+    entry_price: 100,
+    qty: 1,
+    stop_loss: 112, // already higher than suggestedStop 107
+  };
+  const freshIndicators = {
+    atr: { status: 'ok', value: 4 },
+    volumeAnalysis: { status: 'ok', value: { relativeVolume: 2.0 } },
+    latestCandle: { open: 100, high: 115, low: 99, close: 114 },
+  };
+  applySpikeAndExhaustionChecks('demo', 'spot', position, 114, freshIndicators);
+  assert.equal(position.stop_loss, 112, 'Stop loss must remain untouched (ratchet rule)');
 });
 

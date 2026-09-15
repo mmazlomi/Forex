@@ -64,3 +64,17 @@ test('validateConfig accumulates multiple independent errors rather than stoppin
   const errors = validateConfig(mergeConfig({ targetMode: 'bogus', trailingAtrMultiplier: -1 }));
   assert.ok(errors.length >= 2);
 });
+
+test('validateConfig rejects invalid spike settings when spikeExitEnabled is true', () => {
+  const errors = validateConfig(mergeConfig({ spikeExitEnabled: true, spikeAtrMultiplier: -1, spikeVolumeMultiplier: 0 }));
+  assert.ok(errors.some((e) => e.includes('spikeAtrMultiplier')));
+  assert.ok(errors.some((e) => e.includes('spikeVolumeMultiplier')));
+});
+
+test('validateConfig rejects invalid RSI exhaustion boundaries', () => {
+  const errorsOverbought = validateConfig(mergeConfig({ momentumExhaustionEnabled: true, rsiExhaustionOverbought: 45 }));
+  assert.ok(errorsOverbought.some((e) => e.includes('rsiExhaustionOverbought')));
+
+  const errorsOversold = validateConfig(mergeConfig({ momentumExhaustionEnabled: true, rsiExhaustionOversold: 60 }));
+  assert.ok(errorsOversold.some((e) => e.includes('rsiExhaustionOversold')));
+});

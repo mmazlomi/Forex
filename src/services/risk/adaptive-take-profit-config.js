@@ -51,6 +51,18 @@ const DEFAULT_CONFIG = {
   volumeConfirmationRelativeVolumeThreshold: 1.2,
 
   reversalExitEnabled: true,
+
+  // Spike profit-taking: detects abnormal candle expansion in position favor and tightens trail / locks profit
+  spikeExitEnabled: true,
+  spikeAtrMultiplier: 2.5,
+  spikeVolumeMultiplier: 1.5,
+  spikeTightenTrailingMultiplier: 0.8,
+
+  // Momentum exhaustion: detects extreme RSI exhaustion (fading momentum) to lock in profits
+  momentumExhaustionEnabled: true,
+  rsiExhaustionOverbought: 78,
+  rsiExhaustionOversold: 22,
+  exhaustionTrailingMultiplier: 0.75,
 };
 
 /** Deep-merges a partial override onto DEFAULT_CONFIG, same one-level-deep-nesting shape as
@@ -108,7 +120,22 @@ function validateConfig(config) {
   if (!(config.volumeConfirmationRelativeVolumeThreshold > 0)) {
     errors.push('volumeConfirmationRelativeVolumeThreshold must be > 0');
   }
+  if (config.spikeExitEnabled) {
+    if (!(config.spikeAtrMultiplier > 0)) errors.push('spikeAtrMultiplier must be > 0');
+    if (!(config.spikeVolumeMultiplier > 0)) errors.push('spikeVolumeMultiplier must be > 0');
+    if (!(config.spikeTightenTrailingMultiplier > 0)) errors.push('spikeTightenTrailingMultiplier must be > 0');
+  }
+  if (config.momentumExhaustionEnabled) {
+    if (!(config.rsiExhaustionOverbought > 50 && config.rsiExhaustionOverbought <= 100)) {
+      errors.push('rsiExhaustionOverbought must be between 50 and 100');
+    }
+    if (!(config.rsiExhaustionOversold >= 0 && config.rsiExhaustionOversold < 50)) {
+      errors.push('rsiExhaustionOversold must be between 0 and 50');
+    }
+    if (!(config.exhaustionTrailingMultiplier > 0)) errors.push('exhaustionTrailingMultiplier must be > 0');
+  }
   return errors;
 }
 
 module.exports = { DEFAULT_CONFIG, mergeConfig, validateConfig };
+
