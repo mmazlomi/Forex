@@ -115,4 +115,38 @@ async function promoteToSignalsSetting(req, res) {
   sendSuccess(res, results, `${symbol} promoted to Signals Setting.`);
 }
 
-module.exports = { listWatchlist, addToWatchlist, removeFromWatchlist, promoteToSignalsSetting };
+async function setExchange(req, res) {
+  const { symbol } = req.params;
+  const { exchange } = req.query;
+  const { newExchange } = req.body || {};
+  if (!exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'exchange query parameter is required.');
+  }
+  if (!newExchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'newExchange is required in the request body.');
+  }
+  if (newExchange === exchange) {
+    return sendError(res, 'VALIDATION_ERROR', 'newExchange must differ from the current exchange.');
+  }
+
+  const item = watchlistRepository.getItem(req.user.id, symbol, exchange);
+  if (!item) {
+    return sendError(res, 'ASSET_NOT_FOUND', `No WatchList entry "${symbol}" on "${exchange}" was found.`, 404);
+  }
+  if (watchlistRepository.getItem(req.user.id, symbol, newExchange)) {
+    return sendError(res, 'VALIDATION_ERROR', `"${symbol}" on "${newExchange}" is already on your WatchList.`, 409);
+  }
+
+  if (item.asset_type === 'crypto') {
+    const client = exchangeClientFactory.getPublicExchange(newExchange);
+    await withRetry(() => client.loadMarkets(), { maxRetries: config.maxApiRetries });
+    if (!client.markets[symbol]) {
+      return sendError(res, 'VALIDATION_ERROR', `Symbol "${symbol}" was not found on exchange "${newExchange}".`);
+    }
+  }
+
+  const updated = watchlistRepository.setExchange(req.user.id, symbol, exchange, newExchange);
+  sendSuccess(res, updated, `Exchange changed to "${newExchange}" for ${symbol}.`);
+}
+
+module.exports = { listWatchlist, addToWatchlist, removeFromWatchlist, promoteToSignalsSetting, setExchange };

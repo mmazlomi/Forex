@@ -87,6 +87,7 @@ const Api = (() => {
     listWatchlist: () => request('GET', 'api/watchlist'),
     addToWatchlist: (body) => request('POST', 'api/watchlist', { body }),
     removeFromWatchlist: (symbol, exchange) => request('DELETE', `api/watchlist/${encodeURIComponent(symbol)}`, { query: { exchange } }),
+    setWatchlistExchange: (symbol, exchange, newExchange) => request('PUT', `api/watchlist/${encodeURIComponent(symbol)}/exchange`, { query: { exchange }, body: { newExchange } }),
     promoteWatchlistItem: (symbol, exchange) => request('POST', `api/watchlist/${encodeURIComponent(symbol)}/promote`, { query: { exchange } }),
 
     // market: omit for the spot-only list (unchanged); pass 'futures' to also include Liquidity

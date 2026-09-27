@@ -32,4 +32,13 @@ function removeItem(userId, symbol, exchange) {
   return result.changes > 0;
 }
 
-module.exports = { listItems, getItem, addItem, removeItem };
+function setExchange(userId, symbol, oldExchange, newExchange) {
+  const db = getDb();
+  const result = db
+    .prepare('UPDATE watchlist_items SET exchange = ? WHERE user_id = ? AND symbol = ? AND exchange = ?')
+    .run(newExchange, userId, symbol, oldExchange);
+  if (result.changes === 0) return null;
+  return getItem(userId, symbol, newExchange);
+}
+
+module.exports = { listItems, getItem, addItem, removeItem, setExchange };

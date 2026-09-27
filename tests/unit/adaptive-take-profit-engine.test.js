@@ -6,7 +6,7 @@ const {
   computeAdaptiveTargets, normalizeSide, computeAtrTargets, computeRMultipleTargets, blendTargets,
   scaleTargets, snapToStructure, applyStructureSnap, classifyTrendStrength, applyTrendAdjustment,
   applyVolumeModifier, deriveVolatilityRegime, buildReversalConditions,
-  detectCandleSpike, detectMomentumExhaustion,
+  detectCandleSpike, detectMomentumExhaustion, evaluateDynamicTpExpansion,
 } = require('../../src/services/risk/adaptive-take-profit-engine');
 const { DEFAULT_CONFIG, mergeConfig } = require('../../src/services/risk/adaptive-take-profit-config');
 
@@ -578,6 +578,160 @@ test('detectMomentumExhaustion: detects SHORT exhaustion when RSI <= 22 in profi
   assert.equal(res.rsiValue, 18.2);
   assert.equal(res.suggestedStop, 83);
   assert.ok(res.reason.includes('Momentum exhaustion: RSI 18.2 <= 22'));
+});
+
+// ---------- evaluateDynamicTpExpansion ----------
+
+test('evaluateDynamicTpExpansion: returns shouldExpand=false when disabled, invalid input, or weak trend', () => {
+  const basePos = { side: 'long', entry_price: 100, take_profit: 110, qty: 1 };
+
+  // Disabled
+  const resDisabled = evaluateDynamicTpExpansion({
+    position: basePos,
+    currentPrice: 105,
+    indicators: {
+      adx: { status: 'ok', value: { adx: 35, pdi: 28, mdi: 12 } },
+      supportResistance: { status: 'ok', value: { resistanceLevels: [120] } },
+    },
+    config: { dynamicTpExpansionEnabled: false },
+  });
+  assert.equal(resDisabled.shouldExpand, false);
+
+  // Weak ADX (< 25)
+  const resWeakAdx = evaluateDynamicTpExpansion({
+    position: basePos,
+    currentPrice: 105,
+    indicators: {
+      adx: { status: 'ok', value: { adx: 18, pdi: 28, mdi: 12 } },
+      supportResistance: { status: 'ok', value: { resistanceLevels: [120] } },
+    },
+  });
+  assert.equal(resWeakAdx.shouldExpand, false);
+  assert.ok(resWeakAdx.reason.includes('trend is not strong enough'));
+
+  // Trend opposes position (PDI < MDI for Long)
+  const resOppose = evaluateDynamicTpExpansion({
+    position: basePos,
+    currentPrice: 105,
+    indicators: {
+      adx: { status: 'ok', value: { adx: 35, pdi: 12, mdi: 28 } },
+      supportResistance: { status: 'ok', value: { resistanceLevels: [120] } },
+    },
+  });
+  assert.equal(resOppose.shouldExpand, false);
+  assert.ok(resOppose.reason.includes('opposes long position'));
+});
+
+test('evaluateDynamicTpExpansion: successfully expands LONG TP to higher resistance in strong bullish trend', () => {
+  // Current price = 105, old TP3/take_profit = 110, ATR = 2.
+  // Resistance candidate at 125. Buffer = 125 * 0.0015 = 0.1875. Capped target = 124.8125.
+  const position = {
+    side: 'long',
+    entry_price: 100,
+    take_profit: 110,
+    tp3_price: 110,
+    adaptive_tp_enabled: 1,
+    qty: 1,
+  };
+
+  const indicators = {
+    adx: { status: 'ok', value: { adx: 34, pdi: 30, mdi: 14 } },
+    atr: { status: 'ok', value: 2 },
+    supertrend: { status: 'ok', direction: 'up' },
+    supportResistance: {
+      status: 'ok',
+      value: {
+        nearestResistance: 125,
+        resistanceLevels: [125, 135],
+      },
+    },
+  };
+
+  const res = evaluateDynamicTpExpansion({
+    position,
+    currentPrice: 105,
+    indicators,
+  });
+
+  assert.equal(res.shouldExpand, true);
+  assert.equal(res.oldTp, 110);
+  assert.ok(res.newTp > 124 && res.newTp < 125);
+  assert.equal(res.newLevel, 125);
+  assert.equal(res.updates.takeProfit, res.newTp);
+  assert.equal(res.updates.tp3Price, res.newTp);
+  assert.ok(res.reason.includes('detected new resistance at 125'));
+});
+
+test('evaluateDynamicTpExpansion: successfully expands SHORT TP to lower support in strong bearish trend', () => {
+  // Current price = 95, old TP3/take_profit = 90, ATR = 2.
+  // Support candidate at 75. Buffer = 75 * 0.0015 = 0.1125. Capped target = 75.1125.
+  const position = {
+    side: 'short',
+    entry_price: 100,
+    take_profit: 90,
+    tp3_price: 90,
+    adaptive_tp_enabled: 1,
+    qty: 1,
+  };
+
+  const indicators = {
+    adx: { status: 'ok', value: { adx: 32, pdi: 12, mdi: 31 } },
+    atr: { status: 'ok', value: 2 },
+    supertrend: { status: 'ok', direction: 'down' },
+    supportResistance: {
+      status: 'ok',
+      value: {
+        nearestSupport: 75,
+        supportLevels: [75, 65],
+      },
+    },
+  };
+
+  const res = evaluateDynamicTpExpansion({
+    position,
+    currentPrice: 95,
+    indicators,
+  });
+
+  assert.equal(res.shouldExpand, true);
+  assert.equal(res.oldTp, 90);
+  assert.ok(res.newTp > 75 && res.newTp < 76);
+  assert.equal(res.newLevel, 75);
+  assert.equal(res.updates.takeProfit, res.newTp);
+  assert.equal(res.updates.tp3Price, res.newTp);
+  assert.ok(res.reason.includes('detected new support at 75'));
+});
+
+test('evaluateDynamicTpExpansion: refuses expansion if resistance is lower than current target', () => {
+  // Current target is 115, but nearest resistance is at 108 (below target)
+  const position = {
+    side: 'long',
+    entry_price: 100,
+    take_profit: 115,
+    adaptive_tp_enabled: 0,
+    qty: 1,
+  };
+
+  const indicators = {
+    adx: { status: 'ok', value: { adx: 30, pdi: 26, mdi: 15 } },
+    atr: { status: 'ok', value: 2 },
+    supportResistance: {
+      status: 'ok',
+      value: {
+        nearestResistance: 108,
+        resistanceLevels: [108],
+      },
+    },
+  };
+
+  const res = evaluateDynamicTpExpansion({
+    position,
+    currentPrice: 105,
+    indicators,
+  });
+
+  assert.equal(res.shouldExpand, false);
+  assert.ok(res.reason.includes('No valid structural level found beyond the current target'));
 });
 
 

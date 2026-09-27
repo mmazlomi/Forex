@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startAuthedTestServer } = require('../fixtures/test-server');
 const assetsRepository = require('../../src/database/repositories/assets-repository');
+const exchangeClientFactory = require('../../src/services/exchanges/exchange-client-factory');
 
 async function json(res) {
   return res.json();
@@ -51,6 +52,11 @@ test('PUT /api/assets/:symbol/timeframe updates default_timeframe and validates 
 test('PUT /api/assets/:symbol/exchange moves a watchlist entry to a different exchange', async (t) => {
   const { close, authedFetch } = await startAuthedTestServer();
   t.after(close);
+
+  t.mock.method(exchangeClientFactory, 'getPublicExchange', () => ({
+    loadMarkets: async () => {},
+    markets: { 'BTC/USDT': { symbol: 'BTC/USDT', active: true } },
+  }));
 
   const userRes = await authedFetch('/api/auth/me');
   const user = await json(userRes);

@@ -10,6 +10,7 @@ const assert = require('node:assert/strict');
 const {
   checkSpotTrigger, checkFuturesTrigger, computeSpotTrailingUpdate, computeFuturesTrailingUpdate,
   checkAdaptiveTpTriggers, checkReversalExit, applySpikeAndExhaustionChecks,
+  applyDynamicTpExpansionCheck,
 } = require('../../src/services/scheduler/position-risk-watcher');
 
 test('spot (long-only): stop-loss triggers at-or-below the stored level', () => {
@@ -290,5 +291,34 @@ test('applySpikeAndExhaustionChecks: never loosens stop_loss if existing stop is
   };
   applySpikeAndExhaustionChecks('demo', 'spot', position, 114, freshIndicators);
   assert.equal(position.stop_loss, 112, 'Stop loss must remain untouched (ratchet rule)');
+});
+
+test('applyDynamicTpExpansionCheck: expands take_profit and tp3_price on strong trend with higher resistance', () => {
+  const position = {
+    id: 9996,
+    user_id: 1,
+    symbol: 'BTCUSDT',
+    side: 'long',
+    entry_price: 100,
+    take_profit: 110,
+    tp3_price: 110,
+    adaptive_tp_enabled: 1,
+    qty: 1,
+  };
+  const freshIndicators = {
+    adx: { status: 'ok', value: { adx: 32, pdi: 28, mdi: 12 } },
+    atr: { status: 'ok', value: 2 },
+    supertrend: { status: 'ok', direction: 'up' },
+    supportResistance: {
+      status: 'ok',
+      value: {
+        nearestResistance: 120,
+        resistanceLevels: [120],
+      },
+    },
+  };
+  applyDynamicTpExpansionCheck('demo', 'spot', position, 105, freshIndicators);
+  assert.ok(position.take_profit > 119 && position.take_profit < 120);
+  assert.equal(position.tp3Price, position.take_profit);
 });
 

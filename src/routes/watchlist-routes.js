@@ -9,6 +9,7 @@ const router = express.Router();
 router.get('/', asyncHandler(controller.listWatchlist));
 router.post('/', asyncHandler(controller.addToWatchlist));
 router.delete('/:symbol', asyncHandler(controller.removeFromWatchlist));
+router.put('/:symbol/exchange', asyncHandler(controller.setExchange));
 router.post('/:symbol/promote', asyncHandler(controller.promoteToSignalsSetting));
 
 module.exports = router;

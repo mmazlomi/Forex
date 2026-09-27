@@ -12,7 +12,7 @@ const { placeRealFuturesOrder, placeRealFuturesPartialClose } = require('../orde
 // destructured — same t.mock.method(moduleObject, 'fn', ...) convention as every other module in
 // this codebase that gets mocked in tests.
 const atrTrailing = require('../risk/atr-trailing');
-const { detectCandleSpike, detectMomentumExhaustion } = require('../risk/adaptive-take-profit-engine');
+const { detectCandleSpike, detectMomentumExhaustion, evaluateDynamicTpExpansion } = require('../risk/adaptive-take-profit-engine');
 const technicalAnalysis = require('../technical-analysis');
 const technicalScorer = require('../signals/technical-scorer');
 const { computeRealizedR } = require('../risk/realized-r');
@@ -395,6 +395,49 @@ function applySpikeAndExhaustionChecks(mode, market, position, currentPrice, fre
 }
 
 /**
+ * Evaluates whether open position Take-Profit targets should be dynamically expanded
+ * based on newly established structural support/resistance in a strong ongoing trend.
+ */
+function applyDynamicTpExpansionCheck(mode, market, position, currentPrice, freshIndicators) {
+  if (!freshIndicators) return;
+  const result = evaluateDynamicTpExpansion({
+    position,
+    currentPrice,
+    indicators: freshIndicators,
+  });
+
+  if (!result || !result.shouldExpand) return;
+
+  const repo = market === 'futures' ? futuresPositionsRepository : positionsRepository;
+  repo.updateTakeProfitTargets(mode, position.user_id, position.id, result.updates);
+
+  logger.info(
+    'adaptive-tp',
+    `Dynamic TP expansion for ${position.symbol} (${market} ${mode}): ${result.reason} New TP: ${result.newTp.toFixed(4)} (was ${result.oldTp.toFixed(4)})`,
+    {
+      positionId: position.id,
+      userId: position.user_id,
+      oldTp: result.oldTp,
+      newTp: result.newTp,
+      newLevel: result.newLevel,
+    },
+    mode
+  );
+
+  telegramNotifier.notifyTakeProfitExpanded({
+    mode,
+    market,
+    symbol: position.symbol,
+    oldPrice: result.oldTp,
+    newPrice: result.newTp,
+    reason: result.reason,
+  });
+
+  // Mutate position in memory so current cycle sees updated targets
+  Object.assign(position, result.updates);
+}
+
+/**
  * Adaptive-TP orchestration for one spot position, called before the classic trailing/trigger
  * checks below. Fires every TP tier the price has crossed (in order — see checkAdaptiveTpTriggers),
  * then checks for a reversal exit, then seeds trailing once TP1 has fired. Mutates `position` in
@@ -455,6 +498,7 @@ async function handleAdaptiveSpotPosition(mode, position, currentPrice) {
     }
 
     applySpikeAndExhaustionChecks(mode, 'spot', position, currentPrice, freshIndicators);
+    applyDynamicTpExpansionCheck(mode, 'spot', position, currentPrice, freshIndicators);
   }
 
   if (position.tp1_filled_at_utc && position.trailing_percent == null) {
@@ -523,6 +567,7 @@ async function handleAdaptiveFuturesPosition(mode, position, currentPrice) {
     }
 
     applySpikeAndExhaustionChecks(mode, 'futures', position, currentPrice, freshIndicators);
+    applyDynamicTpExpansionCheck(mode, 'futures', position, currentPrice, freshIndicators);
   }
 
   if (position.tp1_filled_at_utc && position.trailing_percent == null) {
@@ -693,4 +738,5 @@ module.exports = {
   computeSpotTrailingUpdate, computeFuturesTrailingUpdate,
   checkAdaptiveTpTriggers, checkReversalExit,
   applySpikeAndExhaustionChecks,
+  applyDynamicTpExpansionCheck,
 };

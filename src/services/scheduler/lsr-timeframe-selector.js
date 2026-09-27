@@ -126,16 +126,25 @@ async function runCycle() {
     logger.debug('lsr-timeframe-selector', `Running LSR timeframe-selection cycle: ${spotAssets.length} spot, ${demoFuturesAssets.length} demo futures, ${realFuturesAssets.length} real futures asset(s)`);
   }
 
-  for (const asset of spotAssets) await processSpotAsset(asset);
-  for (const asset of demoFuturesAssets) await processFuturesAsset('demo', asset);
-  for (const asset of realFuturesAssets) await processFuturesAsset('real', asset);
+  for (const asset of spotAssets) {
+    await processSpotAsset(asset);
+    await new Promise((r) => setImmediate(r));
+  }
+  for (const asset of demoFuturesAssets) {
+    await processFuturesAsset('demo', asset);
+    await new Promise((r) => setImmediate(r));
+  }
+  for (const asset of realFuturesAssets) {
+    await processFuturesAsset('real', asset);
+    await new Promise((r) => setImmediate(r));
+  }
 
   return { spotEvaluated: spotAssets.length, demoFuturesEvaluated: demoFuturesAssets.length, realFuturesEvaluated: realFuturesAssets.length };
 }
 
 function start() {
   if (intervalHandle) return;
-  intervalHandle = setInterval(() => {
+  const executeCycle = () => {
     // See strategy-selector.js's identical guard: prevents overlapping cycles from piling up when
     // a cycle takes longer than the interval (each asset runs up to 5 real backtests).
     if (isRunning) {
@@ -146,7 +155,9 @@ function start() {
     runCycle()
       .catch((err) => logger.error('lsr-timeframe-selector', `LSR timeframe-selection cycle crashed: ${err.message}`))
       .finally(() => { isRunning = false; });
-  }, config.lsrTimeframeSelectionIntervalMs);
+  };
+
+  intervalHandle = setInterval(executeCycle, config.lsrTimeframeSelectionIntervalMs);
   if (typeof intervalHandle.unref === 'function') intervalHandle.unref();
   logger.info('lsr-timeframe-selector', `LSR timeframe selector started (interval ${config.lsrTimeframeSelectionIntervalMs}ms, best of ${CANDIDATE_TIMEFRAMES.length} candidates over a ${config.lsrTimeframeSelectionLookbackDays}d rolling lookback)`);
 }

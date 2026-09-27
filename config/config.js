@@ -29,6 +29,7 @@ const env = process.env;
 const config = Object.freeze({
   nodeEnv: env.NODE_ENV || 'development',
   port: parseInteger('PORT', env.PORT, 3450),
+  host: env.HOST || '0.0.0.0',
   tradingMode: (env.TRADING_MODE || 'demo').toLowerCase(),
   enableLiveTrading: parseBool(env.ENABLE_LIVE_TRADING, false),
 
@@ -104,7 +105,7 @@ const config = Object.freeze({
   // auto-trader.js's majority-vote combined signal. Comparatively expensive (each asset runs a
   // real backtest), so this defaults to a much longer interval than the trade-cycle schedulers
   // above — no need to re-rank strategies every few minutes.
-  strategySelectionIntervalMs: parseInteger('STRATEGY_SELECTION_INTERVAL_MS', env.STRATEGY_SELECTION_INTERVAL_MS, 12 * 60 * 60 * 1000),
+  strategySelectionIntervalMs: parseInteger('STRATEGY_SELECTION_INTERVAL_MS', env.STRATEGY_SELECTION_INTERVAL_MS, 4 * 60 * 60 * 1000),
   strategySelectionLookbackDays: parseInteger('STRATEGY_SELECTION_LOOKBACK_DAYS', env.STRATEGY_SELECTION_LOOKBACK_DAYS, 30),
   strategySelectionCount: parseInteger('STRATEGY_SELECTION_COUNT', env.STRATEGY_SELECTION_COUNT, 3),
   // A backtested 100% win rate off 1-2 trades is noise, not signal — this is the minimum number
@@ -119,13 +120,13 @@ const config = Object.freeze({
   // docs/reversal-strategy/STRATEGY_SPEC.md), so a 30-day window / 5-trade gate tuned for the
   // much higher-frequency weighted-indicator strategies would almost never have enough trades to
   // ever select anything.
-  lsrTimeframeSelectionIntervalMs: parseInteger('LSR_TIMEFRAME_SELECTION_INTERVAL_MS', env.LSR_TIMEFRAME_SELECTION_INTERVAL_MS, 12 * 60 * 60 * 1000),
+  lsrTimeframeSelectionIntervalMs: parseInteger('LSR_TIMEFRAME_SELECTION_INTERVAL_MS', env.LSR_TIMEFRAME_SELECTION_INTERVAL_MS, 4 * 60 * 60 * 1000),
   lsrTimeframeSelectionLookbackDays: parseInteger('LSR_TIMEFRAME_SELECTION_LOOKBACK_DAYS', env.LSR_TIMEFRAME_SELECTION_LOOKBACK_DAYS, 90),
   lsrTimeframeSelectionMinTrades: parseInteger('LSR_TIMEFRAME_SELECTION_MIN_TRADES', env.LSR_TIMEFRAME_SELECTION_MIN_TRADES, 3),
 
   // timeframe-selector.js picks the optimal candle timeframe (15m, 1h, 4h) for an asset with
   // timeframe_mode='auto' (or under Full AutoPilot).
-  timeframeSelectionIntervalMs: parseInteger('TIMEFRAME_SELECTION_INTERVAL_MS', env.TIMEFRAME_SELECTION_INTERVAL_MS, 12 * 60 * 60 * 1000),
+  timeframeSelectionIntervalMs: parseInteger('TIMEFRAME_SELECTION_INTERVAL_MS', env.TIMEFRAME_SELECTION_INTERVAL_MS, 4 * 60 * 60 * 1000),
   timeframeSelectionLookbackDays: parseInteger('TIMEFRAME_SELECTION_LOOKBACK_DAYS', env.TIMEFRAME_SELECTION_LOOKBACK_DAYS, 30),
   timeframeSelectionMinTrades: parseInteger('TIMEFRAME_SELECTION_MIN_TRADES', env.TIMEFRAME_SELECTION_MIN_TRADES, 5),
   timeframeCandidates: ['15m', '1h', '4h'],

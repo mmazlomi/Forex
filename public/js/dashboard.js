@@ -138,6 +138,20 @@
     return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
   }
 
+  // Runs async tasks with bounded concurrency (default 4) to avoid exhausting browser HTTP connection limits
+  async function runWithLimit(items, concurrency, fn) {
+    const queue = [...items];
+    const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        try {
+          await fn(item);
+        } catch (_) {}
+      }
+    });
+    await Promise.all(workers);
+  }
+
   // ---------- tabs ----------
 
   function switchToTab(tabName) {
@@ -333,6 +347,12 @@
   }
 
   function showSymbolSuggestions(filterText) {
+    if (symbolSuggestionsCache.length === 0) {
+      refreshSymbolSuggestions().then(() => {
+        if (symbolSuggestionsCache.length > 0) showSymbolSuggestions(filterText);
+      });
+      return;
+    }
     const list = document.getElementById('symbol-suggestions-list');
     clear(list);
     const matches = filterAndRankSymbols(symbolSuggestionsCache, filterText);
@@ -353,9 +373,15 @@
     const body = document.getElementById('watchlist-body');
     const emptyEl = document.getElementById('watchlist-empty');
     try {
+      if (!exchangesCache.length) {
+        try {
+          exchangesCache = await Api.listExchanges();
+        } catch (_) {}
+      }
       watchlistItemsCache = await Api.listWatchlist();
       clear(body);
       emptyEl.hidden = watchlistItemsCache.length > 0;
+      const priceTasks = [];
 
       watchlistItemsCache.forEach((item, index) => {
         const row = el('tr');
@@ -368,20 +394,39 @@
         symbolCell.appendChild(symbolWrap);
         row.appendChild(symbolCell);
 
-        // Live price/24h % — same fire-and-forget per-row fetch as refreshSpotWatchlist below.
+        // Live price/24h % — bounded concurrency to prevent browser HTTP socket choking.
         const priceCell = el('td', { class: 'cmc-price' }, '…');
         const changeCell = el('td');
         row.appendChild(priceCell);
         row.appendChild(changeCell);
-        Api.getMarketData(item.symbol, item.exchange).then((snapshot) => {
-          priceCell.textContent = fmtPrice(snapshot.price);
-          clear(changeCell);
-          changeCell.appendChild(changeBadge(snapshot.changePercent24h));
-        }).catch(() => {
-          priceCell.textContent = '-';
-        });
+        priceTasks.push({ item, priceCell, changeCell });
 
-        row.appendChild(el('td', {}, item.exchange));
+        const exchangeSelect = el('select');
+        if (!exchangesCache.some((ex) => ex.id === item.exchange)) {
+          exchangeSelect.appendChild(el('option', { value: item.exchange, selected: 'selected' }, item.exchange));
+        }
+        exchangesCache.forEach((ex) => {
+          const opt = el('option', { value: ex.id }, ex.name);
+          if (ex.id === item.exchange) opt.setAttribute('selected', 'selected');
+          exchangeSelect.appendChild(opt);
+        });
+        exchangeSelect.title = 'Switch which exchange this asset is tracked on, without removing and re-adding it.';
+        exchangeSelect.addEventListener('change', async () => {
+          const newExchange = exchangeSelect.value;
+          exchangeSelect.disabled = true;
+          try {
+            await Api.setWatchlistExchange(item.symbol, item.exchange, newExchange);
+            toast(`${item.symbol} moved to ${newExchange}.`, 'success');
+            await refreshWatchList();
+          } catch (err) {
+            exchangeSelect.value = item.exchange;
+            exchangeSelect.disabled = false;
+            toast(`Failed to change exchange: ${err.message}`, 'error');
+          }
+        });
+        const exchangeCell = el('td');
+        exchangeCell.appendChild(exchangeSelect);
+        row.appendChild(exchangeCell);
         row.appendChild(el('td', {}, item.asset_type));
 
         const promoteBtn = el('button', { type: 'button' }, 'Add to Signals Setting');
@@ -429,6 +474,17 @@
 
         body.appendChild(row);
       });
+
+      runWithLimit(priceTasks, 4, async ({ item, priceCell, changeCell }) => {
+        try {
+          const snapshot = await Api.getMarketData(item.symbol, item.exchange);
+          priceCell.textContent = fmtPrice(snapshot.price);
+          clear(changeCell);
+          changeCell.appendChild(changeBadge(snapshot.changePercent24h));
+        } catch {
+          priceCell.textContent = '-';
+        }
+      });
     } catch (err) {
       toast(`Failed to load WatchList: ${err.message}`, 'error');
     }
@@ -473,6 +529,7 @@
       watchlistCache = await Api.listAssets();
       clear(body);
       emptyEl.hidden = watchlistCache.length > 0;
+      const priceTasks = [];
 
       watchlistCache.forEach((asset, index) => {
         const row = el('tr');
@@ -485,20 +542,12 @@
         symbolCell.appendChild(symbolWrap);
         row.appendChild(symbolCell);
 
-        // Live price/24h % — fetched below, per row, after the row is in the DOM (fire-and-forget,
-        // same pattern as loadMarketData's header card); starts as a loading placeholder rather
-        // than blocking the whole table on every asset's network round-trip.
+        // Live price/24h % — populated via runWithLimit below to prevent flooding external exchanges.
         const priceCell = el('td', { class: 'cmc-price' }, '…');
         const changeCell = el('td');
         row.appendChild(priceCell);
         row.appendChild(changeCell);
-        Api.getMarketData(asset.symbol, asset.exchange).then((snapshot) => {
-          priceCell.textContent = fmtPrice(snapshot.price);
-          clear(changeCell);
-          changeCell.appendChild(changeBadge(snapshot.changePercent24h));
-        }).catch(() => {
-          priceCell.textContent = '-';
-        });
+        priceTasks.push({ asset, priceCell, changeCell });
 
         // Lets the exchange be changed in place instead of removing/re-adding the row — the
         // asset's `exchange` is part of its identity (UNIQUE(user_id, symbol, exchange), see
@@ -780,6 +829,17 @@
         row.appendChild(removeCell);
 
         body.appendChild(row);
+      });
+
+      runWithLimit(priceTasks, 4, async ({ asset, priceCell, changeCell }) => {
+        try {
+          const snapshot = await Api.getMarketData(asset.symbol, asset.exchange);
+          priceCell.textContent = fmtPrice(snapshot.price);
+          clear(changeCell);
+          changeCell.appendChild(changeBadge(snapshot.changePercent24h));
+        } catch {
+          priceCell.textContent = '-';
+        }
       });
 
       loadLastWatchlistSignals();
@@ -1599,7 +1659,7 @@
       const trailedStop = t.trailing_percent != null ? fmtPrice(t.stop_loss) : '-';
       row.append(
         el('td', {}, formatTimestamp(t.opened_at_utc)), el('td', {}, formatTimestamp(t.closed_at_utc)),
-        el('td', {}, t.symbol), el('td', {}, t.side), el('td', {}, strategyLabel), el('td', {}, t.timeframe || '-'),
+        el('td', {}, t.symbol), el('td', {}, t.side), buildStrategyCell(t), el('td', {}, t.timeframe || '-'),
         el('td', {}, fmt(t.qty, 6)), el('td', {}, fmtPrice(t.entry_price)),
         el('td', {}, fmtPrice(initialSl)), el('td', {}, trailedStop),
         el('td', {}, fmtPrice(t.take_profit)), buildAdaptiveTpCell(t),
@@ -1967,10 +2027,7 @@
           const sideCell = el('td');
           const isBuy = (t.side || 'BUY').toUpperCase() === 'BUY';
           const sideBadge = el('span', {
-            class: 'badge',
-            style: isBuy
-              ? 'background: rgba(34, 197, 94, 0.15); color: #22c55e; border-color: rgba(34, 197, 94, 0.4); font-weight: 700;'
-              : 'background: rgba(239, 68, 68, 0.15); color: #ef4444; border-color: rgba(239, 68, 68, 0.4); font-weight: 700;'
+            class: `badge ${isBuy ? 'badge--buy' : 'badge--sell'}`,
           }, t.side || 'BUY');
           sideCell.appendChild(sideBadge);
           row.appendChild(sideCell);
@@ -2322,7 +2379,7 @@
       const marketCell = el('td');
       let marketBadge;
       if (asset.market === 'spot') {
-        marketBadge = el('span', { class: 'mode-badge', style: 'background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);' }, 'SPOT');
+        marketBadge = el('span', { class: 'mode-badge mode-badge--spot' }, 'SPOT');
       } else if (asset.market === 'futures-demo') {
         marketBadge = el('span', { class: 'mode-badge mode-badge--demo' }, 'FUTURES DEMO');
       } else {
@@ -2341,8 +2398,8 @@
       const autoCell = el('td');
       const isAuto = asset.autopilotEnabled || asset.strategyMode === 'auto';
       const autoBadge = isAuto
-        ? el('span', { class: 'badge', style: 'background: rgba(16, 185, 129, 0.15); color: #10b981; border-color: rgba(16, 185, 129, 0.3);' }, '⚡ Auto')
-        : el('span', { class: 'badge', style: 'background: rgba(148, 163, 184, 0.1); color: var(--color-text-dim);' }, 'Manual');
+        ? el('span', { class: 'badge badge--success' }, '⚡ Auto')
+        : el('span', { class: 'badge' }, 'Manual');
       autoCell.appendChild(autoBadge);
 
       // Timeframe cell
@@ -2350,7 +2407,7 @@
       const tfStrong = el('strong', {}, asset.timeframe || '1h');
       tfCell.appendChild(tfStrong);
       if (asset.timeframeMode === 'auto') {
-        tfCell.appendChild(el('span', { class: 'hint', style: 'font-size: 0.7rem; color: #38bdf8; margin-left: 0.35rem;' }, ' (Auto)'));
+        tfCell.appendChild(el('span', { class: 'hint text-accent', style: 'font-size: 0.7rem; margin-left: 0.35rem;' }, ' (Auto)'));
       }
 
       // Strategies & Individual Win Rates cell
@@ -2365,8 +2422,7 @@
       } else if (asset.selectedStrategies && asset.selectedStrategies.length > 0) {
         asset.selectedStrategies.forEach((id) => {
           stratsCell.appendChild(el('span', {
-            class: 'badge',
-            style: 'background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border-color: rgba(99, 102, 241, 0.3); margin-right: 4px;',
+            class: 'strategy-metric-badge',
           }, getStrategyDisplayName(id)));
         });
       } else {
@@ -2569,17 +2625,17 @@
         const isSelected = Array.isArray(result.selected) && result.selected.includes(s.strategyId);
 
         if (isSelected) {
-          row.style.background = 'rgba(16, 185, 129, 0.08)';
+          row.classList.add('leaderboard-row--selected');
         }
 
-        const winRateColor = s.winRatePercent >= 60 ? '#10b981' : s.winRatePercent >= 45 ? '#38bdf8' : 'var(--color-text-dim)';
-        const pnlColor = s.totalPnlPercent > 0 ? '#10b981' : s.totalPnlPercent < 0 ? '#ef4444' : 'inherit';
+        const winRateColor = s.winRatePercent >= 60 ? 'var(--color-success)' : s.winRatePercent >= 45 ? 'var(--color-accent)' : 'var(--color-text-dim)';
+        const pnlColor = s.totalPnlPercent > 0 ? 'var(--color-success)' : s.totalPnlPercent < 0 ? 'var(--color-danger)' : 'inherit';
 
         let statusBadge;
         if (isSelected) {
-          statusBadge = el('span', { class: 'badge', style: 'background: rgba(16, 185, 129, 0.2); color: #10b981; border-color: rgba(16, 185, 129, 0.4);' }, '⭐ AutoPilot Selected');
+          statusBadge = el('span', { class: 'badge badge--success' }, '⭐ AutoPilot Selected');
         } else if (!s.qualifies) {
-          statusBadge = el('span', { class: 'badge', style: 'background: rgba(245, 158, 11, 0.1); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);' }, `Low Trades (<${result.minTrades})`);
+          statusBadge = el('span', { class: 'badge badge--warning' }, `Low Trades (<${result.minTrades})`);
         } else {
           statusBadge = el('span', { class: 'hint' }, 'Eligible (Lower Rank)');
         }
@@ -2973,9 +3029,75 @@
     checkStatus();
   }
 
+  // ---------- theme switcher (day / light vs dark / night) ----------
+
+  const THEME_STORAGE_KEY = 'app-theme';
+
+  function initTheme() {
+    const toggleBtn = document.getElementById('theme-toggle-btn');
+    const toggleIcon = document.getElementById('theme-toggle-icon');
+
+    function getSystemTheme() {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+
+    function applyTheme(theme, save = false) {
+      if (theme === 'dark' || theme === 'light') {
+        document.documentElement.setAttribute('data-theme', theme);
+        if (save) {
+          try { localStorage.setItem(THEME_STORAGE_KEY, theme); } catch {}
+        }
+      } else {
+        document.documentElement.removeAttribute('data-theme');
+        if (save) {
+          try { localStorage.removeItem(THEME_STORAGE_KEY); } catch {}
+        }
+      }
+
+      const activeTheme = theme || getSystemTheme();
+      if (toggleIcon) {
+        toggleIcon.textContent = activeTheme === 'dark' ? '☀️' : '🌙';
+      }
+      if (toggleBtn) {
+        toggleBtn.title = activeTheme === 'dark' ? 'Switch to Light Theme' : 'Switch to Dark Theme';
+      }
+    }
+
+    let savedTheme = null;
+    try {
+      savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+    } catch {}
+
+    if (savedTheme === 'dark') {
+      applyTheme('dark', false);
+    } else {
+      applyTheme('light', false);
+    }
+
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+      let currentSaved = null;
+      try { currentSaved = localStorage.getItem(THEME_STORAGE_KEY); } catch {}
+      if (!currentSaved) {
+        applyTheme(e.matches ? 'dark' : 'light', false);
+        loadChart();
+      }
+    });
+
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        const current = document.documentElement.getAttribute('data-theme') || getSystemTheme();
+        const next = current === 'dark' ? 'light' : 'dark';
+        applyTheme(next, true);
+        toast(`Switched to ${next === 'light' ? 'Light / Day' : 'Dark / Night'} theme.`, 'info');
+        loadChart();
+      });
+    }
+  }
+
   // ---------- init ----------
 
   function init() {
+    initTheme();
     initTabs();
     ModeSwitcher.init();
     // The Futures half of the Signals Setting Results table depends on which mode is selected
@@ -3029,7 +3151,6 @@
     initBacktestForm();
     initOptimizer();
     initAutoPilotMatrix();
-    loadAutoPilotMatrix();
     initRiskSettingsForm();
     initFuturesRiskSettingsForm();
     initEmergencyControls();
@@ -3041,7 +3162,9 @@
     document.getElementById('refresh-logs-btn').addEventListener('click', refreshLogs);
 
     document.getElementById('exchange-input').addEventListener('change', refreshSymbolSuggestions);
-    loadStrategyOptions().then(() => loadExchangeOptions().then(() => Promise.all([loadAsset(), refreshSymbolSuggestions()])).then(refreshSpotWatchlist));
+    loadStrategyOptions().then(() => loadExchangeOptions().then(loadAsset));
+    // Warm up symbol suggestions in background without blocking initial render
+    setTimeout(() => refreshSymbolSuggestions(), 1200);
     loadRealCredentialsExchangeOptions().then(refreshRealCredentialsStatus);
     loadRiskSettings(ModeSwitcher.getMode());
     loadFuturesRiskSettings(ModeSwitcher.getMode());

@@ -7,12 +7,19 @@
  * script tag) since it's an internal metric, not a market symbol TradingView can chart.
  */
 const Charts = (() => {
+  function isDarkTheme() {
+    const forced = document.documentElement.getAttribute('data-theme');
+    if (forced === 'dark') return true;
+    if (forced === 'light') return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+
   function chartOptions() {
-    const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const dark = isDarkTheme();
     return {
       layout: {
         background: { color: 'transparent' },
-        textColor: dark ? '#e6e6e6' : '#16181d',
+        textColor: dark ? '#e6e6e6' : '#1e293b',
       },
       grid: {
         vertLines: { color: dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)' },
@@ -108,7 +115,7 @@ const Charts = (() => {
     if (!container || typeof TradingView === 'undefined') return null;
     container.innerHTML = '';
 
-    const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const dark = isDarkTheme();
     // eslint-disable-next-line no-undef -- TradingView is defined by the externally-loaded tv.js
     const tvWidget = new TradingView.widget({
       autosize: true,

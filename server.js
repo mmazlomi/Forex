@@ -51,6 +51,13 @@ function createApp() {
   const app = express();
 
   app.use(stripKnownPrefix);
+  app.use((req, res, next) => {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    if (!req.url.startsWith('/css') && !req.url.startsWith('/js') && !req.url.startsWith('/favicon')) {
+      console.log(`[HTTP ${req.method}] ${req.url} from ${ip}`);
+    }
+    next();
+  });
   app.use(express.json());
   app.use(express.static(path.join(__dirname, 'public')));
 
@@ -97,7 +104,7 @@ function start() {
   getDb();
 
   const app = createApp();
-  const server = app.listen(config.port, () => {
+  const server = app.listen(config.port, config.host || '0.0.0.0', () => {
     console.log(`Trading bot server listening on http://localhost:${config.port} (mode: ${config.tradingMode}, live trading: ${config.enableLiveTrading})`);
   });
 

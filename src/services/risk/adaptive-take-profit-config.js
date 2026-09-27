@@ -63,6 +63,12 @@ const DEFAULT_CONFIG = {
   rsiExhaustionOverbought: 78,
   rsiExhaustionOversold: 22,
   exhaustionTrailingMultiplier: 0.75,
+
+  // Dynamic Take-Profit expansion: expands unfilled TP tiers when a strong confirming trend
+  // develops after entry and new higher resistance (long) or lower support (short) is established.
+  dynamicTpExpansionEnabled: true,
+  dynamicTpMinAdxThreshold: 25,
+  dynamicTpMinExpansionDistanceAtrMultiplier: 0.5,
 };
 
 /** Deep-merges a partial override onto DEFAULT_CONFIG, same one-level-deep-nesting shape as

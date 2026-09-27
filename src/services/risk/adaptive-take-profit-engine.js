@@ -438,10 +438,146 @@ function detectMomentumExhaustion({ indicators, side, unrealizedPnl, currentPric
   return { isExhausted: false, reason: null, rsiValue: rsiVal, suggestedStop: null };
 }
 
+/**
+ * Evaluates whether open position Take-Profit targets should be dynamically expanded
+ * based on newly established structural support/resistance in a strong ongoing trend.
+ */
+function evaluateDynamicTpExpansion({ position, currentPrice, indicators, config }) {
+  const cfg = config || mergeConfig();
+  if (!cfg.dynamicTpExpansionEnabled) {
+    return { shouldExpand: false, reason: 'Dynamic TP expansion is disabled.' };
+  }
+  if (!position || typeof currentPrice !== 'number' || !(currentPrice > 0)) {
+    return { shouldExpand: false, reason: 'Invalid position or current price.' };
+  }
+
+  const normSide = normalizeSide(position.side);
+  if (!normSide) return { shouldExpand: false, reason: 'Invalid position side.' };
+  const isLong = normSide === 'long';
+
+  // 1. Check trend strength and agreement
+  const adxObj = indicators?.adx;
+  if (!adxObj || adxObj.status !== 'ok' || !adxObj.value) {
+    return { shouldExpand: false, reason: 'ADX indicator unavailable.' };
+  }
+  const { adx, pdi, mdi } = adxObj.value;
+  const minAdx = cfg.dynamicTpMinAdxThreshold ?? 25;
+  if (typeof adx !== 'number' || adx < minAdx) {
+    return { shouldExpand: false, reason: `ADX ${adx?.toFixed?.(1)} < ${minAdx} — trend is not strong enough.` };
+  }
+
+  const trendAgrees = isLong ? (pdi > mdi) : (mdi > pdi);
+  if (!trendAgrees) {
+    return { shouldExpand: false, reason: `Trend direction opposes ${normSide} position (PDI/MDI mismatch).` };
+  }
+
+  if (indicators?.supertrend?.status === 'ok' && indicators.supertrend.direction) {
+    const expectedDir = isLong ? 'up' : 'down';
+    if (indicators.supertrend.direction !== expectedDir) {
+      return { shouldExpand: false, reason: `Supertrend (${indicators.supertrend.direction}) opposes ${normSide}.` };
+    }
+  }
+
+  // 2. Determine the target to expand
+  let currentTarget = null;
+  let targetTier = 'take_profit';
+  if (position.adaptive_tp_enabled) {
+    if (position.tp3_filled_at_utc) {
+      return { shouldExpand: false, reason: 'All TP tiers are already filled.' };
+    }
+    currentTarget = typeof position.tp3_price === 'number' ? position.tp3_price : position.take_profit;
+    targetTier = 'tp3';
+  } else {
+    currentTarget = position.take_profit;
+    if (typeof currentTarget !== 'number') {
+      return { shouldExpand: false, reason: 'Position has no initial take_profit.' };
+    }
+  }
+
+  if (typeof currentTarget !== 'number') {
+    return { shouldExpand: false, reason: 'No valid current target found to expand.' };
+  }
+
+  // 3. Check market structure
+  const ms = indicators?.supportResistance;
+  if (!ms || ms.status !== 'ok' || !ms.value) {
+    return { shouldExpand: false, reason: 'Support/resistance market structure unavailable.' };
+  }
+
+  const bufferPercent = cfg.supportResistanceBufferPercent ?? 0.15;
+  const atrVal = indicators?.atr?.status === 'ok' && typeof indicators.atr.value === 'number'
+    ? indicators.atr.value
+    : (typeof position.entry_atr === 'number' ? position.entry_atr : currentPrice * 0.01);
+  const minDistance = atrVal * (cfg.dynamicTpMinExpansionDistanceAtrMultiplier ?? 0.5);
+
+  let newTarget = null;
+  let chosenLevel = null;
+
+  if (isLong) {
+    // Find resistance candidates above currentTarget and currentPrice
+    const candidates = (ms.value.resistanceLevels || [])
+      .concat(typeof ms.value.nearestResistance === 'number' ? [ms.value.nearestResistance] : [])
+      .filter((lvl) => typeof lvl === 'number' && lvl > currentPrice)
+      .sort((a, b) => a - b); // ascending
+
+    for (const lvl of candidates) {
+      const bufferAbs = lvl * (bufferPercent / 100);
+      const candidateTarget = lvl - bufferAbs;
+      if (candidateTarget >= currentTarget + minDistance && candidateTarget > currentPrice) {
+        newTarget = candidateTarget;
+        chosenLevel = lvl;
+        break; // take the nearest valid higher resistance above the old target
+      }
+    }
+  } else {
+    // Short: Find support candidates below currentTarget and currentPrice
+    const candidates = (ms.value.supportLevels || [])
+      .concat(typeof ms.value.nearestSupport === 'number' ? [ms.value.nearestSupport] : [])
+      .filter((lvl) => typeof lvl === 'number' && lvl < currentPrice)
+      .sort((a, b) => b - a); // descending
+
+    for (const lvl of candidates) {
+      const bufferAbs = lvl * (bufferPercent / 100);
+      const candidateTarget = lvl + bufferAbs;
+      if (candidateTarget <= currentTarget - minDistance && candidateTarget < currentPrice) {
+        newTarget = candidateTarget;
+        chosenLevel = lvl;
+        break; // take the nearest valid lower support below the old target
+      }
+    }
+  }
+
+  if (newTarget === null) {
+    return { shouldExpand: false, reason: 'No valid structural level found beyond the current target.' };
+  }
+
+  const updates = {
+    takeProfit: newTarget,
+    take_profit: newTarget,
+  };
+  if (position.adaptive_tp_enabled) {
+    updates.tp3Price = newTarget;
+    updates.tp3_price = newTarget;
+  }
+
+  const reason = `Strong ${normSide} trend (ADX ${adx.toFixed(1)}) — detected new ${isLong ? 'resistance' : 'support'} at ${chosenLevel.toFixed(4)}. Target expanded by ${Math.abs(newTarget - currentTarget).toFixed(4)}.`;
+
+  return {
+    shouldExpand: true,
+    oldTp: currentTarget,
+    newTp: newTarget,
+    newLevel: chosenLevel,
+    targetTier,
+    reason,
+    updates,
+  };
+}
+
 module.exports = {
   computeAdaptiveTargets,
   detectCandleSpike,
   detectMomentumExhaustion,
+  evaluateDynamicTpExpansion,
   // Exported for direct unit testing of each pure step.
   normalizeSide,
   computeAtrTargets,

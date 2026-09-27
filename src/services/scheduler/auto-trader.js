@@ -33,6 +33,17 @@ function resolveCombinedStrategyIds(asset) {
   }
 }
 
+/**
+ * Guards against entering spot BUY positions at boundary extremes:
+ * Never open a BUY when price is already overbought (RSI > 70) AND sitting at resistance or upper Bollinger Band.
+ */
+function isExhaustedLong(signal) {
+  if (!signal || !Array.isArray(signal.reasons)) return false;
+  const hasOverbought = signal.reasons.some((r) => r.includes('> 70') || r.includes('overbought'));
+  const hasResistance = signal.reasons.some((r) => r.includes('resistance level') || r.includes('upper Bollinger Band'));
+  return hasOverbought && hasResistance;
+}
+
 async function processAsset(asset) {
   const userId = asset.user_id;
   const symbol = asset.symbol;
@@ -70,6 +81,10 @@ async function processAsset(asset) {
         logger.warn('auto-trader', `Skipped BUY for ${symbol}: signal had no stop/take-profit`, {}, MODE);
         return;
       }
+      if (isExhaustedLong(signal)) {
+        logger.warn('auto-trader', `Skipped BUY for ${symbol}: entry is exhausted at resistance/overbought boundary`, {}, MODE);
+        return;
+      }
       const trailingPercent = await resolveTrailingPercent(asset, { symbol, exchange, market: 'spot', timeframe: asset.default_timeframe });
       const adaptiveTp = await resolveAdaptiveTp({
         asset, symbol, exchange, market: 'spot', timeframe: asset.default_timeframe, side: 'buy',
@@ -98,6 +113,7 @@ async function runCycle() {
   logger.debug('auto-trader', `Running AI auto-trade cycle for ${enabledAssets.length} asset(s)`, {}, MODE);
   for (const asset of enabledAssets) {
     await processAsset(asset);
+    await new Promise((r) => setImmediate(r));
   }
   return { evaluated: enabledAssets.length };
 }

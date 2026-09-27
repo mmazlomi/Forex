@@ -160,6 +160,26 @@ function seedTrailingPercent(mode, userId, id, { trailingPercent, highWaterMark 
   return getPosition(mode, userId, id);
 }
 
+/** Updates take_profit / tp1_price / tp2_price / tp3_price on an open futures position. */
+function updateTakeProfitTargets(mode, userId, id, updates = {}) {
+  const db = getDb();
+  const table = futuresPositionsTable(mode);
+  const sets = [];
+  const params = [];
+  const tp = updates.takeProfit !== undefined ? updates.takeProfit : updates.take_profit;
+  const tp1 = updates.tp1Price !== undefined ? updates.tp1Price : updates.tp1_price;
+  const tp2 = updates.tp2Price !== undefined ? updates.tp2Price : updates.tp2_price;
+  const tp3 = updates.tp3Price !== undefined ? updates.tp3Price : updates.tp3_price;
+  if (tp !== undefined) { sets.push('take_profit = ?'); params.push(tp); }
+  if (tp1 !== undefined) { sets.push('tp1_price = ?'); params.push(tp1); }
+  if (tp2 !== undefined) { sets.push('tp2_price = ?'); params.push(tp2); }
+  if (tp3 !== undefined) { sets.push('tp3_price = ?'); params.push(tp3); }
+  if (sets.length === 0) return getPosition(mode, userId, id);
+  params.push(id, userId);
+  db.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).run(...params);
+  return getPosition(mode, userId, id);
+}
+
 module.exports = {
   listOpenPositions,
   listAllOpenPositions,
@@ -175,5 +195,6 @@ module.exports = {
   updateLiquidationPrice,
   updateTrailingStop,
   seedTrailingPercent,
+  updateTakeProfitTargets,
   recordPartialExit,
 };

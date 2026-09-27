@@ -19,6 +19,20 @@ const Futures = (() => {
   let strategiesCache = [];
   // Private copy, deliberately not shared with dashboard.js's own TIMEFRAME_OPTIONS — see this
   // file's header comment. Matches the backend's SUPPORTED_TIMEFRAMES.
+  // Runs async tasks with bounded concurrency (default 4) to avoid exhausting browser HTTP connection limits
+  async function runWithLimit(items, concurrency, fn) {
+    const queue = [...items];
+    const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        try {
+          await fn(item);
+        } catch (_) {}
+      }
+    });
+    await Promise.all(workers);
+  }
+
   const TIMEFRAME_OPTIONS = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
   const LSR_STRATEGY_ID = 'liquidity-sweep-reversal';
   // Fully independent Demo/Real watchlist caches — never merged, never shared.
@@ -262,6 +276,12 @@ const Futures = (() => {
   }
 
   function showSymbolSuggestions(filterText) {
+    if (symbolsCache.length === 0) {
+      refreshSymbolSuggestions().then(() => {
+        if (symbolsCache.length > 0) showSymbolSuggestions(filterText);
+      });
+      return;
+    }
     const list = document.getElementById('futures-symbol-suggestions-list');
     const matches = filterAndRankSymbols(symbolsCache, filterText);
     clear(list);
@@ -515,7 +535,7 @@ const Futures = (() => {
       const trailedStop = t.trailing_percent != null ? fmtPrice(t.stop_loss) : '-';
       row.append(
         el('td', {}, formatTimestamp(t.opened_at_utc)), el('td', {}, formatTimestamp(t.closed_at_utc)),
-        el('td', {}, t.symbol), el('td', {}, t.side), el('td', {}, `${t.leverage}x`), el('td', {}, strategyLabel), el('td', {}, t.timeframe || '-'),
+        el('td', {}, t.symbol), el('td', {}, t.side), el('td', {}, `${t.leverage}x`), buildStrategyCell(t), el('td', {}, t.timeframe || '-'),
         el('td', {}, fmt(t.qty, 6)), el('td', {}, fmtPrice(t.entry_price)),
         el('td', {}, fmtPrice(initialSl)), el('td', {}, trailedStop),
         el('td', {}, fmtPrice(t.take_profit)), buildAdaptiveTpCell(t),
@@ -655,6 +675,7 @@ const Futures = (() => {
       watchlistCache[mode] = assets;
       clear(body);
       emptyEl.hidden = assets.length > 0;
+      const priceTasks = [];
 
       assets.forEach((asset, index) => {
         const row = el('tr');
@@ -667,20 +688,12 @@ const Futures = (() => {
         symbolCell.appendChild(symbolWrap);
         row.appendChild(symbolCell);
 
-        // Live price/24h % via the futures snapshot (market: 'futures' routes /api/market-data
-        // through the KuCoin futures client — see market-controller.js — since the spot client
-        // has no data for a futures-only symbol like BTC/USDT:USDT).
+        // Live price/24h % via runWithLimit below to avoid HTTP socket choking.
         const priceCell = el('td', { class: 'cmc-price' }, '…');
         const changeCell = el('td');
         row.appendChild(priceCell);
         row.appendChild(changeCell);
-        Api.getMarketData(asset.symbol, asset.exchange || 'kucoin', 'futures').then((snapshot) => {
-          priceCell.textContent = fmtPrice(snapshot.price);
-          clear(changeCell);
-          changeCell.appendChild(changeBadge(snapshot.changePercent24h));
-        }).catch(() => {
-          priceCell.textContent = '-';
-        });
+        priceTasks.push({ asset, priceCell, changeCell });
 
         // Inline switcher, mirroring dashboard.js#refreshSpotWatchlist's exchange <select> exactly
         // — lets the exchange be changed in place instead of removing/re-adding the row. Includes
@@ -949,6 +962,17 @@ const Futures = (() => {
 
         body.appendChild(row);
       });
+
+      runWithLimit(priceTasks, 4, async ({ asset, priceCell, changeCell }) => {
+        try {
+          const snapshot = await Api.getMarketData(asset.symbol, asset.exchange || 'kucoin', 'futures');
+          priceCell.textContent = fmtPrice(snapshot.price);
+          clear(changeCell);
+          changeCell.appendChild(changeBadge(snapshot.changePercent24h));
+        } catch {
+          priceCell.textContent = '-';
+        }
+      });
     } catch (err) {
       toast(`Failed to load ${mode} futures Signals Setting: ${err.message}`, 'error');
     }
@@ -1106,11 +1130,12 @@ const Futures = (() => {
 
     ModeSwitcher.onRealUnlock(updateRealPanelVisibility);
 
-    loadStrategyOptions().then(() => refreshWatchlist('demo'));
-    loadFuturesExchangeOptions().then(refreshSymbolSuggestions);
+    loadStrategyOptions();
+    loadFuturesExchangeOptions();
     updateCurrentSymbolLabels();
-    refreshPortfolio('demo');
     updateRealPanelVisibility();
+    // Warm up symbol suggestions in background without blocking initial render
+    setTimeout(() => refreshSymbolSuggestions(), 1800);
 
     // Light polling while the Demo/Real Trading tabs are visible, matching Spot dashboard's own
     // cadence — keeps unrealized P&L/liquidation distance from going stale during an open

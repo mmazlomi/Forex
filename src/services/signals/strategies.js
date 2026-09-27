@@ -13,7 +13,7 @@ const STRATEGIES = {
     id: 'balanced',
     name: 'Balanced',
     description: 'The default — every indicator contributes at its standard weight, technical 60% / fundamental 40%. A reasonable all-purpose starting point.',
-    indicatorWeights: { rsi: 1, macd: 1, ema: 1, bollingerBands: 0.7, stochastic: 0.7, adx: 0.6, ichimoku: 0.6, supportResistance: 0.6, volumeAnalysis: 0.3 },
+    indicatorWeights: { rsi: 1, macd: 1, ema: 1, bollingerBands: 0.7, stochastic: 0.7, adx: 0.6, ichimoku: 0.6, supportResistance: 0.6, volumeAnalysis: 0.3, supertrend: 1.0 },
     technicalWeight: 0.6,
     fundamentalWeight: 0.4,
     buyThreshold: 0.3,

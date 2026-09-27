@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css?v=21" />
+  <link rel="stylesheet" href="css/styles.css?v=25" />
   <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
@@ -29,6 +29,9 @@
       <span id="mode-badge" class="mode-badge mode-badge--demo">DEMO MODE</span>
     </div>
     <div class="account-bar">
+      <button id="theme-toggle-btn" class="theme-toggle-btn" type="button" title="Toggle Light/Dark Theme" aria-label="Toggle theme">
+        <span id="theme-toggle-icon">☀️</span>
+      </button>
       <div class="account-user-wrap">
         <span class="account-avatar-dot"></span>
         <span id="account-username"></span>
@@ -88,14 +91,38 @@
   </div>
 
   <nav class="tabs" id="tabs">
-    <button class="tab-btn tab-btn--active" data-tab="dashboard" type="button">WatchList</button>
-    <button class="tab-btn" data-tab="demo" type="button">Demo Trading</button>
-    <button class="tab-btn" data-tab="real" type="button">Real Trading</button>
-    <button class="tab-btn" data-tab="watchlist" type="button">Signals Setting</button>
-    <button class="tab-btn" data-tab="backtest" type="button">Backtest</button>
-    <button class="tab-btn" data-tab="statistics" type="button">Statistics</button>
-    <button class="tab-btn" data-tab="risk" type="button">Risk Settings</button>
-    <button class="tab-btn" data-tab="system" type="button">System &amp; Logs</button>
+    <button class="tab-btn tab-btn--active" data-tab="dashboard" type="button">
+      <svg class="tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path></svg>
+      WatchList
+    </button>
+    <button class="tab-btn" data-tab="demo" type="button">
+      <svg class="tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+      Demo Trading
+    </button>
+    <button class="tab-btn" data-tab="real" type="button">
+      <svg class="tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"></path><path d="M12 18V6"></path></svg>
+      Real Trading
+    </button>
+    <button class="tab-btn" data-tab="watchlist" type="button">
+      <svg class="tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+      Signals Setting
+    </button>
+    <button class="tab-btn" data-tab="backtest" type="button">
+      <svg class="tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>
+      Backtest
+    </button>
+    <button class="tab-btn" data-tab="statistics" type="button">
+      <svg class="tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+      Statistics
+    </button>
+    <button class="tab-btn" data-tab="risk" type="button">
+      <svg class="tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+      Risk Settings
+    </button>
+    <button class="tab-btn" data-tab="system" type="button">
+      <svg class="tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+      System &amp; Logs
+    </button>
   </nav>
 
   <main class="app-main">
@@ -594,10 +621,10 @@
         <div class="header-controls" style="margin-bottom: 0.85rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;">
           <h2 style="margin: 0; padding: 0; border: none;">Run Backtest</h2>
           <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
-            <div id="backtest-auto-status-badge" class="badge" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.65rem; font-size: 0.75rem; border-color: rgba(56, 189, 248, 0.4);">
-              <span class="status-indicator status-indicator--live" style="width: 8px; height: 8px; background: #10b981; border-radius: 50%; display: inline-block;"></span>
-              <span>15m Auto-Run: <strong id="backtest-auto-state-text" style="color: #10b981;">Active</strong></span>
-              <span>(Next in: <strong id="backtest-countdown-display" style="color: #38bdf8; font-family: var(--font-mono);">15:00</strong>)</span>
+            <div id="backtest-auto-status-badge" class="badge backtest-auto-badge">
+              <span class="status-indicator status-indicator--live" style="width: 8px; height: 8px; border-radius: 50%; display: inline-block;"></span>
+              <span>15m Auto-Run: <strong id="backtest-auto-state-text" class="text-positive">Active</strong></span>
+              <span>(Next in: <strong id="backtest-countdown-display" class="backtest-countdown-display">15:00</strong>)</span>
             </div>
             <button id="backtest-auto-toggle-btn" type="button" style="font-size: 0.78rem; padding: 0.35rem 0.75rem;">⏸️ Pause</button>
             <button id="backtest-run-now-btn" type="button" class="btn-autopilot" style="font-size: 0.78rem; padding: 0.35rem 0.75rem;">🔄 Run Now</button>
@@ -618,7 +645,7 @@
       </div>
       <div class="card" id="backtest-results-card" hidden>
         <h2>Results &amp; Performance Summary</h2>
-        <div id="backtest-summary-banner" class="hint" style="font-size: 0.8rem; margin-bottom: 0.75rem; color: #38bdf8;"></div>
+        <div id="backtest-summary-banner" class="hint backtest-summary-banner"></div>
         <p class="disclaimer">Past performance does not guarantee future results.</p>
         <dl class="stat-list" id="backtest-metrics"></dl>
         <div id="equity-chart" class="chart-container"></div>
@@ -654,7 +681,7 @@
           <div>
             <h2 style="margin: 0; padding: 0; border: none; display: flex; align-items: center; gap: 0.5rem;">
               <span>AutoPilot Multi-Asset Backtest Matrix</span>
-              <span class="badge" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; font-size: 0.72rem;">All Watchlist Symbols</span>
+              <span class="badge badge-accent">All Watchlist Symbols</span>
             </h2>
             <p class="hint" style="margin: 0.25rem 0 0 0;">
               Autonomous background backtest evaluations across Spot &amp; Futures assets. Strategies and timeframes are ranked by historical win rate over a 30-day rolling lookback window.
@@ -671,43 +698,43 @@
         </div>
 
         <!-- 4 KPI Summary Cards -->
-        <div class="grid grid--4col" style="margin-bottom: 0.85rem; gap: 0.65rem;">
-          <div class="kpi-card" style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.65rem; text-align: center;">
-            <div class="hint" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;">Total Monitored</div>
-            <div id="autopilot-kpi-total" style="font-size: 1.35rem; font-weight: 700; color: #f8fafc; font-family: var(--font-mono); margin-top: 0.15rem;">0</div>
+        <div class="grid grid--4col matrix-kpi-grid">
+          <div class="kpi-card">
+            <div class="hint kpi-card__title">Total Monitored</div>
+            <div id="autopilot-kpi-total" class="kpi-card__value">0</div>
           </div>
-          <div class="kpi-card" style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.65rem; text-align: center;">
-            <div class="hint" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;">AutoPilot Active</div>
-            <div id="autopilot-kpi-active" style="font-size: 1.35rem; font-weight: 700; color: #10b981; font-family: var(--font-mono); margin-top: 0.15rem;">0</div>
+          <div class="kpi-card">
+            <div class="hint kpi-card__title">AutoPilot Active</div>
+            <div id="autopilot-kpi-active" class="kpi-card__value text-positive">0</div>
           </div>
-          <div class="kpi-card" style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.65rem; text-align: center;">
-            <div class="hint" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;">Evaluated Symbols</div>
-            <div id="autopilot-kpi-evaluated" style="font-size: 1.35rem; font-weight: 700; color: #38bdf8; font-family: var(--font-mono); margin-top: 0.15rem;">0</div>
+          <div class="kpi-card">
+            <div class="hint kpi-card__title">Evaluated Symbols</div>
+            <div id="autopilot-kpi-evaluated" class="kpi-card__value kpi-card__value--cyan">0</div>
           </div>
-          <div class="kpi-card" style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.65rem; text-align: center;">
-            <div class="hint" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;">Avg AutoPilot Win Rate</div>
-            <div id="autopilot-kpi-winrate" style="font-size: 1.35rem; font-weight: 700; color: #a78bfa; font-family: var(--font-mono); margin-top: 0.15rem;">-</div>
+          <div class="kpi-card">
+            <div class="hint kpi-card__title">Avg AutoPilot Win Rate</div>
+            <div id="autopilot-kpi-winrate" class="kpi-card__value kpi-card__value--purple">-</div>
           </div>
         </div>
 
-        <div id="autopilot-matrix-info-bar" class="hint" style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.85rem; background: rgba(15, 23, 42, 0.5); padding: 0.5rem 0.75rem; border-radius: var(--radius-md); border: 1px solid var(--color-border); font-size: 0.75rem; align-items: center;">
-          <span>📅 Lookback: <strong id="autopilot-config-lookback" style="color: #38bdf8;">30d</strong></span>
-          <span>🎯 Min Trades: <strong id="autopilot-config-min-trades" style="color: #38bdf8;">5</strong></span>
-          <span>🏆 Top Selection: <strong id="autopilot-config-top-count" style="color: #38bdf8;">2-3 Strategies</strong></span>
-          <span>⏱️ Interval: <strong id="autopilot-config-interval" style="color: #38bdf8;">12h</strong></span>
-          <span>📊 Status: <strong id="autopilot-matrix-eval-count" style="color: #10b981;">0 / 0</strong></span>
+        <div id="autopilot-matrix-info-bar" class="hint matrix-info-bar">
+          <span>📅 Lookback: <strong id="autopilot-config-lookback">30d</strong></span>
+          <span>🎯 Min Trades: <strong id="autopilot-config-min-trades">5</strong></span>
+          <span>🏆 Top Selection: <strong id="autopilot-config-top-count">2-3 Strategies</strong></span>
+          <span>⏱️ Interval: <strong id="autopilot-config-interval">12h</strong></span>
+          <span>📊 Status: <strong id="autopilot-matrix-eval-count" class="text-positive">0 / 0</strong></span>
         </div>
 
         <!-- Toolbar: Market filter tabs & Symbol search -->
-        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.85rem;">
-          <div id="autopilot-matrix-market-filters" style="display: inline-flex; gap: 0.25rem; background: rgba(15, 23, 42, 0.6); padding: 0.2rem; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
-            <button type="button" class="btn-filter btn-filter--active" data-market="all" style="font-size: 0.75rem; padding: 0.3rem 0.65rem; border-radius: 4px;">All (<span id="filter-count-all">0</span>)</button>
-            <button type="button" class="btn-filter" data-market="spot" style="font-size: 0.75rem; padding: 0.3rem 0.65rem; border-radius: 4px;">Spot (<span id="filter-count-spot">0</span>)</button>
-            <button type="button" class="btn-filter" data-market="futures-demo" style="font-size: 0.75rem; padding: 0.3rem 0.65rem; border-radius: 4px;">Futures Demo (<span id="filter-count-demo">0</span>)</button>
-            <button type="button" class="btn-filter" data-market="futures-real" style="font-size: 0.75rem; padding: 0.3rem 0.65rem; border-radius: 4px;">Futures Real (<span id="filter-count-real">0</span>)</button>
+        <div class="matrix-toolbar">
+          <div id="autopilot-matrix-market-filters" class="matrix-market-filters">
+            <button type="button" class="btn-filter btn-filter--active" data-market="all">All (<span id="filter-count-all">0</span>)</button>
+            <button type="button" class="btn-filter" data-market="spot">Spot (<span id="filter-count-spot">0</span>)</button>
+            <button type="button" class="btn-filter" data-market="futures-demo">Futures Demo (<span id="filter-count-demo">0</span>)</button>
+            <button type="button" class="btn-filter" data-market="futures-real">Futures Real (<span id="filter-count-real">0</span>)</button>
           </div>
-          <div style="display: flex; align-items: center; gap: 0.5rem;">
-            <input id="autopilot-matrix-search" type="text" placeholder="🔍 Search symbol (e.g. BTC, ETH)..." style="font-size: 0.78rem; padding: 0.35rem 0.75rem; width: 230px; background: rgba(15, 23, 42, 0.7); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: #fff;" />
+          <div class="matrix-search-wrap">
+            <input id="autopilot-matrix-search" type="text" class="matrix-search-input" placeholder="🔍 Search symbol (e.g. BTC, ETH)..." />
           </div>
         </div>
 
@@ -957,13 +984,13 @@
 
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
-  <script src="js/api.js?v=22"></script>
-  <script src="js/auth.js?v=22"></script>
-  <script src="js/charts.js?v=22"></script>
-  <script src="js/mode-switcher.js?v=22"></script>
-  <script src="js/order-confirmation.js?v=22"></script>
-  <script src="js/futures.js?v=22"></script>
-  <script src="js/dashboard.js?v=22"></script>
-  <script src="js/app.js?v=22"></script>
+  <script src="js/api.js?v=23"></script>
+  <script src="js/auth.js?v=23"></script>
+  <script src="js/charts.js?v=23"></script>
+  <script src="js/mode-switcher.js?v=23"></script>
+  <script src="js/order-confirmation.js?v=23"></script>
+  <script src="js/futures.js?v=23"></script>
+  <script src="js/dashboard.js?v=24"></script>
+  <script src="js/app.js?v=23"></script>
 </body>
 </html>

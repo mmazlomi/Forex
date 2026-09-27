@@ -148,6 +148,24 @@ class TelegramNotifier {
   }
 
   /**
+   * Notify when Take-Profit targets are dynamically expanded in a strong trend.
+   */
+  async notifyTakeProfitExpanded({ mode = 'demo', market = 'spot', symbol, oldPrice, newPrice, reason }) {
+    if (!this.isEnabled()) return;
+    const text = [
+      `🚀 <b>Take-Profit Expanded: ${symbol}</b>`,
+      `━━━━━━━━━━━━━━━━━━`,
+      `• <b>Mode:</b> ${mode.toUpperCase()} (${market.toUpperCase()})`,
+      `• <b>Old TP:</b> $${this._fmt(oldPrice, 4)}`,
+      `• <b>New TP:</b> $${this._fmt(newPrice, 4)}`,
+      `• <b>Reason:</b> ${reason || 'Strong trend & higher structural level detected'}`,
+      `• <b>Time:</b> ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`,
+    ].join('\n');
+
+    return this.sendMessage(text);
+  }
+
+  /**
    * Notify when Stop-Loss is hit.
    */
   async notifyStopLoss({ mode = 'demo', market = 'spot', symbol, price, realizedPnl }) {

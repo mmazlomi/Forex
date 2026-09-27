@@ -68,6 +68,26 @@ function resolveCombinedStrategyIds(asset) {
   }
 }
 
+/**
+ * Guards against entering positions at boundary extremes:
+ * - Never open a SHORT when price is already oversold (< 30) AND sitting at support or lower Bollinger Band.
+ * - Never open a LONG when price is already overbought (> 70) AND sitting at resistance or upper Bollinger Band.
+ */
+function isExhaustedEntry(action, signal) {
+  if (!signal || !Array.isArray(signal.reasons)) return false;
+  if (action === 'open_short') {
+    const hasOversold = signal.reasons.some((r) => r.includes('< 30') || r.includes('oversold'));
+    const hasSupport = signal.reasons.some((r) => r.includes('support level') || r.includes('lower Bollinger Band'));
+    return hasOversold && hasSupport;
+  }
+  if (action === 'open_long') {
+    const hasOverbought = signal.reasons.some((r) => r.includes('> 70') || r.includes('overbought'));
+    const hasResistance = signal.reasons.some((r) => r.includes('resistance level') || r.includes('upper Bollinger Band'));
+    return hasOverbought && hasResistance;
+  }
+  return false;
+}
+
 async function processAsset(mode, asset, source, realCredCache) {
   const userId = asset.user_id;
   const symbol = asset.symbol;
@@ -114,6 +134,10 @@ async function processAsset(mode, asset, source, realCredCache) {
     async function openDirectional(action) {
       if (signal.stopLoss == null || signal.takeProfit == null) {
         logger.warn('futures-auto-trader', `Skipped ${action} for ${symbol}: signal had no stop/take-profit`, { userId }, mode);
+        return;
+      }
+      if (isExhaustedEntry(action, signal)) {
+        logger.warn('futures-auto-trader', `Skipped ${action} for ${symbol}: entry is exhausted at ${action === 'open_short' ? 'support/oversold' : 'resistance/overbought'} boundary`, { userId }, mode);
         return;
       }
       const trailingPercent = await resolveTrailingPercent(asset, { symbol, exchange, market: 'futures', timeframe: asset.default_timeframe });
@@ -199,9 +223,11 @@ async function runCycle() {
   }
   for (const asset of demoAssets) {
     await processAsset('demo', asset, 'auto', realCredCache);
+    await new Promise((r) => setImmediate(r));
   }
   for (const asset of realAssets) {
     await processAsset('real', asset, 'auto', realCredCache);
+    await new Promise((r) => setImmediate(r));
   }
 
   await checkLiquidationDistances();

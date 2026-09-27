@@ -7,6 +7,7 @@ const logger = require('../logging/logger');
 const config = require('../../../config/config');
 
 let intervalHandle = null;
+let bootTimer = null;
 let isRunning = false;
 
 /**
@@ -122,9 +123,18 @@ async function runCycle() {
     logger.debug('timeframe-selector', `Running timeframe selection cycle: ${spotAssets.length} spot, ${demoFuturesAssets.length} demo futures, ${realFuturesAssets.length} real futures asset(s)`);
   }
 
-  for (const asset of spotAssets) await processSpotAsset(asset);
-  for (const asset of demoFuturesAssets) await processFuturesAsset('demo', asset);
-  for (const asset of realFuturesAssets) await processFuturesAsset('real', asset);
+  for (const asset of spotAssets) {
+    await processSpotAsset(asset);
+    await new Promise((r) => setImmediate(r));
+  }
+  for (const asset of demoFuturesAssets) {
+    await processFuturesAsset('demo', asset);
+    await new Promise((r) => setImmediate(r));
+  }
+  for (const asset of realFuturesAssets) {
+    await processFuturesAsset('real', asset);
+    await new Promise((r) => setImmediate(r));
+  }
 
   return {
     spotEvaluated: spotAssets.length,
@@ -135,7 +145,7 @@ async function runCycle() {
 
 function start() {
   if (intervalHandle) return;
-  intervalHandle = setInterval(() => {
+  const executeCycle = () => {
     if (isRunning) {
       logger.warn('timeframe-selector', 'Skipped timeframe selection cycle: previous cycle is still running');
       return;
@@ -144,7 +154,9 @@ function start() {
     runCycle()
       .catch((err) => logger.error('timeframe-selector', `Timeframe selection cycle crashed: ${err.message}`))
       .finally(() => { isRunning = false; });
-  }, config.timeframeSelectionIntervalMs);
+  };
+
+  intervalHandle = setInterval(executeCycle, config.timeframeSelectionIntervalMs);
   if (typeof intervalHandle.unref === 'function') intervalHandle.unref();
   logger.info('timeframe-selector', `Timeframe selector started (interval ${config.timeframeSelectionIntervalMs}ms, lookback ${config.timeframeSelectionLookbackDays}d)`);
 }

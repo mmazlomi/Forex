@@ -20,6 +20,7 @@ const config = require('../../../config/config');
 // longer default interval — see config.js's strategySelectionIntervalMs.
 
 let intervalHandle = null;
+let bootTimer = null;
 let isRunning = false;
 
 /**
@@ -205,16 +206,25 @@ async function runCycle() {
     logger.debug('strategy-selector', `Running strategy-selection cycle: ${spotAssets.length} spot, ${demoFuturesAssets.length} demo futures, ${realFuturesAssets.length} real futures asset(s)`);
   }
 
-  for (const asset of spotAssets) await processSpotAsset(asset);
-  for (const asset of demoFuturesAssets) await processFuturesAsset('demo', asset);
-  for (const asset of realFuturesAssets) await processFuturesAsset('real', asset);
+  for (const asset of spotAssets) {
+    await processSpotAsset(asset);
+    await new Promise((r) => setImmediate(r));
+  }
+  for (const asset of demoFuturesAssets) {
+    await processFuturesAsset('demo', asset);
+    await new Promise((r) => setImmediate(r));
+  }
+  for (const asset of realFuturesAssets) {
+    await processFuturesAsset('real', asset);
+    await new Promise((r) => setImmediate(r));
+  }
 
   return { spotEvaluated: spotAssets.length, demoFuturesEvaluated: demoFuturesAssets.length, realFuturesEvaluated: realFuturesAssets.length };
 }
 
 function start() {
   if (intervalHandle) return;
-  intervalHandle = setInterval(() => {
+  const executeCycle = () => {
     // See auto-trader.js's identical guard: prevents overlapping cycles from piling up when a
     // cycle takes longer than the interval (each asset runs a real backtest, so this is the
     // most expensive of the five schedulers per cycle).
@@ -226,7 +236,9 @@ function start() {
     runCycle()
       .catch((err) => logger.error('strategy-selector', `Strategy-selection cycle crashed: ${err.message}`))
       .finally(() => { isRunning = false; });
-  }, config.strategySelectionIntervalMs);
+  };
+
+  intervalHandle = setInterval(executeCycle, config.strategySelectionIntervalMs);
   if (typeof intervalHandle.unref === 'function') intervalHandle.unref();
   logger.info('strategy-selector', `Strategy selector started (interval ${config.strategySelectionIntervalMs}ms, top ${config.strategySelectionCount} by win rate over a ${config.strategySelectionLookbackDays}d rolling lookback)`);
 }
